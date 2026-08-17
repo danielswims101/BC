@@ -384,9 +384,10 @@ function fbm2(x,y,octaves,lacunarity,gain){
 // CONSTANTS
 //////////////////////////////////////////////////////////////
 const CHUNK_SIZE = 16;
-const WORLD_CHUNKS = 4;
-const WORLD_SIZE = CHUNK_SIZE * WORLD_CHUNKS; // 64
-const WORLD_HEIGHT = 40;
+const WORLD_HEIGHT = 48;
+const RENDER_DISTANCE_CHUNKS = 5;   // radius, in chunks, that stays loaded/meshed around the player
+const CHUNK_UNLOAD_MARGIN = 2;      // extra chunks of hysteresis before unloading, avoids load/unload thrashing
+const CHUNKS_LOADED_PER_FRAME = 2;  // streaming budget so new terrain never stutters the frame
 const TOOL_TIER = { HAND:0, WOOD:1, STONE:2, IRON:3 };
 const TOOL_TIER_NAME = ['Hand','Wood','Stone','Iron'];
 
@@ -458,49 +459,32 @@ function itemName(id){ return (ItemDef[id]&&ItemDef[id].name) || '?'; }
 function itemStackSize(id){ return (ItemDef[id]&&ItemDef[id].stack) || 64; }
 
 //////////////////////////////////////////////////////////////
-// WORLD DATA
+// WORLD DATA — infinite, chunk-streamed. Terrain is generated
+// on demand per-chunk from a pure noise function of world (x,z),
+// so any chunk can be created independently, in any order, and
+// still stitch together seamlessly with its neighbors.
 //////////////////////////////////////////////////////////////
-const World = {
-  data: new Uint8Array(WORLD_SIZE*WORLD_HEIGHT*WORLD_SIZE),
-  heightMap: new Int16Array(WORLD_SIZE*WORLD_SIZE),
-  spawnPoint: {x:WORLD_SIZE/2, y:WORLD_HEIGHT, z:WORLD_SIZE/2},
-  idx(x,y,z){ return (y*WORLD_SIZE*WORLD_SIZE)+(z*WORLD_SIZE)+x; },
-  inBounds(x,y,z){ return x>=0&&x<WORLD_SIZE&&y>=0&&y<WORLD_HEIGHT&&z>=0&&z<WORLD_SIZE; },
-  get(x,y,z){
-    x|=0; y|=0; z|=0;
-    if(!this.inBounds(x,y,z)) return BLOCKS.AIR;
-    return this.data[this.idx(x,y,z)];
-  },
-  setRaw(x,y,z,id){
-    if(!this.inBounds(x,y,z)) return;
-    this.data[this.idx(x,y,z)] = id;
-  },
-  set(x,y,z,id){
-    if(!this.inBounds(x,y,z)) return false;
-    this.data[this.idx(x,y,z)] = id;
-    ChunkManager.markDirtyAt(x,y,z);
-    return true;
-  },
-  surfaceY(x,z){
-    if(x<0||x>=WORLD_SIZE||z<0||z>=WORLD_SIZE) return WORLD_HEIGHT;
-    for(let y=WORLD_HEIGHT-1;y>=0;y--){ if(this.data[this.idx(x,y,z)]!==BLOCKS.AIR) return y; }
-    return 0;
-  }
-};
+const chunkStore = new Map(); // "cx,cz" -> {blocks:Uint8Array, heightMap:Int16Array, decorated:bool}
+function chunkDataKey(cx,cz){ return cx+','+cz; }
 
-function generateWorld(){
-  const cx=(WORLD_SIZE-1)/2, cz=(WORLD_SIZE-1)/2;
-  for(let z=0; z<WORLD_SIZE; z++){
-    for(let x=0; x<WORLD_SIZE; x++){
-      const dx=x-cx, dz=z-cz;
-      const distN = Math.sqrt(dx*dx+dz*dz)/(WORLD_SIZE*0.5);
-      const falloff = Math.max(0, 1-Math.pow(Math.min(distN,1.3),3));
-      const n = fbm2(x*0.045+100, z*0.045+100, 4, 2.05, 0.52);
-      const n2 = fbm2(x*0.11+500, z*0.11+500, 2, 2.0, 0.5) * 0.25;
-      const h = (n*0.8+n2);
-      let height = 5 + Math.round(h*17*falloff);
-      height = Math.max(3, Math.min(WORLD_HEIGHT-6, height));
-      World.heightMap[z*WORLD_SIZE+x] = height;
+function computeTerrainHeight(x,z){
+  const n = fbm2(x*0.045+1000, z*0.045+1000, 4, 2.05, 0.52);
+  const n2 = fbm2(x*0.011+4000, z*0.011+4000, 3, 2.1, 0.5); // slow, large-scale rolling hills/valleys
+  const n3 = fbm2(x*0.11+500, z*0.11+500, 2, 2.0, 0.5) * 0.22;
+  const h = n*0.55 + n2*0.35 + n3;
+  let height = 8 + Math.round(h*26);
+  return Math.max(2, Math.min(WORLD_HEIGHT-10, height));
+}
+
+function generateChunkData(cx,cz){
+  const blocks = new Uint8Array(CHUNK_SIZE*WORLD_HEIGHT*CHUNK_SIZE);
+  const heightMap = new Int16Array(CHUNK_SIZE*CHUNK_SIZE);
+  const bx0=cx*CHUNK_SIZE, bz0=cz*CHUNK_SIZE;
+  for(let lz=0; lz<CHUNK_SIZE; lz++){
+    for(let lx=0; lx<CHUNK_SIZE; lx++){
+      const x=bx0+lx, z=bz0+lz;
+      const height = computeTerrainHeight(x,z);
+      heightMap[lz*CHUNK_SIZE+lx] = height;
       for(let y=0; y<WORLD_HEIGHT; y++){
         let id = BLOCKS.AIR;
         if(y < height-3){
@@ -513,38 +497,74 @@ function generateWorld(){
         } else if(y < height){
           id = BLOCKS.GRASS;
         }
-        if(id!==BLOCKS.AIR) World.setRaw(x,y,z,id);
+        if(id!==BLOCKS.AIR) blocks[(y*CHUNK_SIZE*CHUNK_SIZE)+(lz*CHUNK_SIZE)+lx] = id;
       }
     }
   }
-  plantTrees();
-  World.spawnPoint.x = cx+2;
-  World.spawnPoint.z = cz+2;
-  World.spawnPoint.y = World.surfaceY(Math.round(cx+2), Math.round(cz+2)) + 2;
+  return {blocks, heightMap, decorated:false};
+}
+function getOrCreateChunkData(cx,cz){
+  const key = chunkDataKey(cx,cz);
+  let c = chunkStore.get(key);
+  if(!c){ c = generateChunkData(cx,cz); chunkStore.set(key,c); }
+  return c;
 }
 
-function plantTrees(){
-  const placed = [];
-  for(let z=3; z<WORLD_SIZE-3; z++){
-    for(let x=3; x<WORLD_SIZE-3; x++){
-      const height = World.heightMap[z*WORLD_SIZE+x];
-      if(height<5) continue;
-      if(World.get(x,height-1,z)!==BLOCKS.GRASS) continue;
-      const r = hash2(x*13+3, z*17+9);
-      if(r<0.018){
-        let tooClose=false;
-        for(let i=0;i<placed.length;i++){
-          const p=placed[i];
-          if(Math.abs(p[0]-x)<3 && Math.abs(p[1]-z)<3){ tooClose=true; break; }
-        }
-        if(tooClose) continue;
-        placed.push([x,z]);
-        plantTree(x,height,z);
-      }
+const World = {
+  inBounds(x,y,z){ return y>=0 && y<WORLD_HEIGHT; },
+  get(x,y,z){
+    if(y<0||y>=WORLD_HEIGHT) return BLOCKS.AIR;
+    x|=0; y|=0; z|=0;
+    const cx=Math.floor(x/CHUNK_SIZE), cz=Math.floor(z/CHUNK_SIZE);
+    const c = getOrCreateChunkData(cx,cz);
+    const lx=x-cx*CHUNK_SIZE, lz=z-cz*CHUNK_SIZE;
+    return c.blocks[(y*CHUNK_SIZE*CHUNK_SIZE)+(lz*CHUNK_SIZE)+lx];
+  },
+  setRaw(x,y,z,id){
+    if(y<0||y>=WORLD_HEIGHT) return;
+    const cx=Math.floor(x/CHUNK_SIZE), cz=Math.floor(z/CHUNK_SIZE);
+    const c = getOrCreateChunkData(cx,cz);
+    const lx=x-cx*CHUNK_SIZE, lz=z-cz*CHUNK_SIZE;
+    c.blocks[(y*CHUNK_SIZE*CHUNK_SIZE)+(lz*CHUNK_SIZE)+lx] = id;
+  },
+  set(x,y,z,id){
+    if(y<0||y>=WORLD_HEIGHT) return false;
+    this.setRaw(x,y,z,id);
+    ChunkManager.markDirtyAt(x,y,z);
+    return true;
+  },
+  surfaceY(x,z){
+    const cx=Math.floor(x/CHUNK_SIZE), cz=Math.floor(z/CHUNK_SIZE);
+    const c = getOrCreateChunkData(cx,cz);
+    const lx=x-cx*CHUNK_SIZE, lz=z-cz*CHUNK_SIZE;
+    return c.heightMap[lz*CHUNK_SIZE+lx];
+  },
+  spawnPoint: {x:0.5, y:WORLD_HEIGHT, z:0.5}
+};
+function computeSpawnPoint(){
+  const h = computeTerrainHeight(0,0);
+  World.spawnPoint.x = 0.5; World.spawnPoint.z = 0.5;
+  World.spawnPoint.y = h+2;
+}
+
+// Deterministic, order-independent tree placement: a column is a tree
+// origin if its hash score is a local maximum within a small radius AND
+// clears a rarity threshold. Because this depends only on fixed (x,z)
+// hashes (never on "what chunk generated first"), any chunk can decide
+// independently whether a tree crosses into it from a neighbor.
+function treeHashScore(x,z){ return hash2(x*13+3, z*17+9); }
+function isTreeOrigin(x,z){
+  const score = treeHashScore(x,z);
+  if(score<0.86) return false;
+  for(let dz=-2; dz<=2; dz++){
+    for(let dx=-2; dx<=2; dx++){
+      if(dx===0 && dz===0) continue;
+      if(treeHashScore(x+dx,z+dz) > score) return false;
     }
   }
+  return true;
 }
-function plantTree(x,baseY,z){
+function plantTreeAt(x,baseY,z){
   const trunkH = 4 + Math.floor(hash2(x*7+1,z*7+1)*2);
   for(let i=0;i<trunkH;i++) World.setRaw(x,baseY+i,z,BLOCKS.LOG);
   const topY = baseY+trunkH;
@@ -556,9 +576,26 @@ function plantTree(x,baseY,z){
       for(let lz=-radius; lz<=radius; lz++){
         if(radius===2 && Math.abs(lx)===2 && Math.abs(lz)===2) continue;
         const bx=x+lx, bz=z+lz;
-        if(bx<0||bx>=WORLD_SIZE||bz<0||bz>=WORLD_SIZE) continue;
         if(World.get(bx,ry,bz)===BLOCKS.AIR) World.setRaw(bx,ry,bz,BLOCKS.LEAVES);
       }
+    }
+  }
+}
+// Decorates one chunk's worth of ground with trees, scanning a padded
+// border so canopies/trunks that straddle a chunk seam still get placed
+// correctly regardless of which chunk loads first.
+function maybeDecorateChunk(cx,cz){
+  const c = getOrCreateChunkData(cx,cz);
+  if(c.decorated) return;
+  c.decorated = true;
+  const bx0=cx*CHUNK_SIZE, bz0=cz*CHUNK_SIZE;
+  const pad = 3;
+  for(let z=bz0-pad; z<bz0+CHUNK_SIZE+pad; z++){
+    for(let x=bx0-pad; x<bx0+CHUNK_SIZE+pad; x++){
+      if(!isTreeOrigin(x,z)) continue;
+      const height = computeTerrainHeight(x,z);
+      if(height<5) continue;
+      plantTreeAt(x,height,z);
     }
   }
 }
@@ -943,7 +980,10 @@ function buildChunkMesh(chunkX, chunkZ){
 
 const ChunkManager = {
   meshes: {},
+  loaded: new Set(),   // keys with an active mesh in the scene right now
   dirty: new Set(),
+  pendingLoad: [],      // ring-ordered queue of {cx,cz} waiting to be loaded, closest first
+  pendingLoadSet: new Set(),
   key(cx,cz){ return cx+','+cz; },
   chunkCoordOf(x,z){ return [Math.floor(x/CHUNK_SIZE), Math.floor(z/CHUNK_SIZE)]; },
   markDirtyAt(x,y,z){
@@ -955,14 +995,47 @@ const ChunkManager = {
     if(lz===0) this.dirty.add(this.key(cx,cz-1));
     if(lz===CHUNK_SIZE-1) this.dirty.add(this.key(cx,cz+1));
   },
-  buildAll(){
-    for(let cx=0; cx<WORLD_CHUNKS; cx++){
-      for(let cz=0; cz<WORLD_CHUNKS; cz++){ this.rebuildChunk(cx,cz); }
+  // Loads (generates data for, decorates, and meshes) every chunk within
+  // `radius` immediately - no per-frame budget. Used once at startup so the
+  // player doesn't spawn into empty space; ongoing exploration streams in
+  // via updateStreaming()'s budgeted queue instead.
+  loadAreaImmediate(pcx,pcz,radius){
+    for(let r=0; r<=radius; r++){
+      for(let dz=-r; dz<=r; dz++){
+        for(let dx=-r; dx<=r; dx++){
+          if(Math.max(Math.abs(dx),Math.abs(dz))!==r) continue;
+          this.ensureLoaded(pcx+dx, pcz+dz);
+        }
+      }
+    }
+  },
+  ensureLoaded(cx,cz){
+    const key = this.key(cx,cz);
+    if(this.loaded.has(key)) return;
+    maybeDecorateChunk(cx,cz);
+    // Pre-touch the 4 neighbors' data (not meshes) so this chunk's boundary
+    // faces are culled against real terrain instead of assumed-air, which
+    // would otherwise pop/disappear a frame later once the neighbor loads.
+    getOrCreateChunkData(cx-1,cz); getOrCreateChunkData(cx+1,cz);
+    getOrCreateChunkData(cx,cz-1); getOrCreateChunkData(cx,cz+1);
+    this.loaded.add(key);
+    this.rebuildChunk(cx,cz);
+  },
+  unload(cx,cz){
+    const key = this.key(cx,cz);
+    if(!this.loaded.has(key)) return;
+    this.loaded.delete(key);
+    const entry = this.meshes[key];
+    if(entry){
+      for(const layer of ['opaque','cutout','glass']){
+        if(entry[layer]){ scene.remove(entry[layer]); entry[layer].geometry.dispose(); }
+      }
+      delete this.meshes[key];
     }
   },
   rebuildChunk(cx,cz){
-    if(cx<0||cz<0||cx>=WORLD_CHUNKS||cz>=WORLD_CHUNKS) return;
     const key = this.key(cx,cz);
+    if(!this.loaded.has(key)) return;
     const buffers = buildChunkMesh(cx,cz);
     let entry = this.meshes[key];
     if(!entry){ entry = {opaque:null,cutout:null,glass:null}; this.meshes[key]=entry; }
@@ -988,6 +1061,48 @@ const ChunkManager = {
     const list = Array.from(this.dirty);
     this.dirty.clear();
     for(const key of list){ const p=key.split(',').map(Number); this.rebuildChunk(p[0],p[1]); }
+  },
+  // Called every frame during play: keeps a `RENDER_DISTANCE_CHUNKS` ring
+  // of terrain loaded around the player, streaming new chunks in closest
+  // first at a fixed per-frame budget, and unloading ones left far behind.
+  updateStreaming(playerX, playerZ){
+    const pcx = Math.floor(playerX/CHUNK_SIZE), pcz = Math.floor(playerZ/CHUNK_SIZE);
+    const rd = RENDER_DISTANCE_CHUNKS;
+    for(let r=0; r<=rd; r++){
+      for(let dz=-r; dz<=r; dz++){
+        for(let dx=-r; dx<=r; dx++){
+          if(Math.max(Math.abs(dx),Math.abs(dz))!==r) continue;
+          if(dx*dx+dz*dz > rd*rd+1) continue;
+          const cx=pcx+dx, cz=pcz+dz, key=this.key(cx,cz);
+          if(this.loaded.has(key) || this.pendingLoadSet.has(key)) continue;
+          this.pendingLoad.push({cx,cz});
+          this.pendingLoadSet.add(key);
+        }
+      }
+    }
+    let budget = CHUNKS_LOADED_PER_FRAME;
+    while(budget>0 && this.pendingLoad.length>0){
+      const {cx,cz} = this.pendingLoad.shift();
+      const key = this.key(cx,cz);
+      this.pendingLoadSet.delete(key);
+      if(this.loaded.has(key)) continue;
+      this.ensureLoaded(cx,cz);
+      budget--;
+    }
+    const unloadDist = rd + CHUNK_UNLOAD_MARGIN;
+    for(const key of Array.from(this.loaded)){
+      const p = key.split(',').map(Number);
+      if(Math.abs(p[0]-pcx)>unloadDist || Math.abs(p[1]-pcz)>unloadDist) this.unload(p[0],p[1]);
+    }
+    // drop any queued-but-not-yet-loaded requests that fell out of range
+    // (e.g. the player flew away before they were serviced)
+    if(this.pendingLoad.length>200){
+      this.pendingLoad = this.pendingLoad.filter(({cx,cz})=>{
+        const keep = Math.abs(cx-pcx)<=rd+1 && Math.abs(cz-pcz)<=rd+1;
+        if(!keep) this.pendingLoadSet.delete(this.key(cx,cz));
+        return keep;
+      });
+    }
   }
 };
 
@@ -1000,9 +1115,11 @@ const canvasEl = document.getElementById('gameCanvas');
 function initScene(){
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0xbfe3ff);
-  scene.fog = new THREE.Fog(0xbfe3ff, 45, 150);
+  const fogNear = (RENDER_DISTANCE_CHUNKS-2)*CHUNK_SIZE;
+  const fogFar = (RENDER_DISTANCE_CHUNKS+CHUNK_UNLOAD_MARGIN-0.5)*CHUNK_SIZE;
+  scene.fog = new THREE.Fog(0xbfe3ff, Math.max(20,fogNear), fogFar);
 
-  camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.05, 260);
+  camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.05, fogFar+40);
   camera.rotation.order = 'YXZ';
 
   renderer = new THREE.WebGLRenderer({ canvas:canvasEl, antialias:false });
@@ -1049,6 +1166,21 @@ function buildStarField(){
   const pts = new THREE.Points(geo, mat);
   pts.renderOrder = -1;
   return pts;
+}
+
+let sunMesh, moonMesh;
+function buildCelestialBodies(){
+  const sunGeo = new THREE.CircleGeometry(9, 20);
+  const sunMat = new THREE.MeshBasicMaterial({ color:0xfff3d0, fog:false, depthWrite:false, transparent:true, opacity:0.95 });
+  sunMesh = new THREE.Mesh(sunGeo, sunMat);
+  sunMesh.renderOrder = -2;
+  scene.add(sunMesh);
+
+  const moonGeo = new THREE.CircleGeometry(6.5, 20);
+  const moonMat = new THREE.MeshBasicMaterial({ color:0xe4e9f5, fog:false, depthWrite:false, transparent:true, opacity:0.9 });
+  moonMesh = new THREE.Mesh(moonGeo, moonMat);
+  moonMesh.renderOrder = -2;
+  scene.add(moonMesh);
 }
 //////////////////////////////////////////////////////////////
 // GAME / UI STATE MACHINE
@@ -2049,7 +2181,6 @@ function trySpawnMob(isNight){
   for(let attempt=0; attempt<6; attempt++){
     const ang=Math.random()*Math.PI*2, dist=10+Math.random()*14;
     const x=Math.floor(player.pos.x+Math.cos(ang)*dist), z=Math.floor(player.pos.z+Math.sin(ang)*dist);
-    if(x<1||x>=WORLD_SIZE-1||z<1||z>=WORLD_SIZE-1) continue;
     const y=World.surfaceY(x,z)+1;
     if(y<1||y>WORLD_HEIGHT-2) continue;
     const groundId=World.get(x,y-1,z);
@@ -2111,13 +2242,16 @@ function attackMob(m){
 // DAY / NIGHT CYCLE
 //////////////////////////////////////////////////////////////
 const DAY_LENGTH_SECONDS = 600;
-let dayTime = 0.27;
-function isNightTime(){ return Math.sin(dayTime*Math.PI*2) < 0.03; }
+let dayTime = 0.4;
+function isNightTime(){ return -Math.cos(dayTime*Math.PI*2) < 0.03; }
 
 function updateDayNight(dt){
   dayTime += dt/DAY_LENGTH_SECONDS;
   if(dayTime>=1) dayTime-=1;
-  const angle = dayTime*Math.PI*2;
+  // Shifted a quarter-turn so dayTime lines up with the HUD clock the way
+  // players expect: 00:00 midnight = sun lowest, 06:00 = sunrise, 12:00 =
+  // sun highest, 18:00 = sunset.
+  const angle = dayTime*Math.PI*2 - Math.PI/2;
   const sunHeight = Math.sin(angle);
   const sunHoriz = Math.cos(angle);
   const dayFactor = Math.max(0, sunHeight);
@@ -2142,6 +2276,19 @@ function updateDayNight(dt){
   scene.fog.color.copy(sky);
 
   starField.material.opacity = Math.max(0, 1-dayFactor*3.2)*0.9;
+  starField.position.set(camera.position.x, camera.position.y, camera.position.z);
+
+  // Sun and moon are simple billboards riding the same orbit as the light
+  // (moon 180 degrees opposite), always centered on the player so they read
+  // as infinitely distant no matter how far you've walked.
+  const orbitR = 180;
+  const cx = camera.position.x, cy = camera.position.y, cz = camera.position.z;
+  sunMesh.position.set(cx+sunHoriz*orbitR, cy+Math.max(sunHeight,-0.15)*orbitR, cz+40*(orbitR/100));
+  sunMesh.quaternion.copy(camera.quaternion);
+  sunMesh.material.opacity = 0.55+dayFactor*0.4;
+  moonMesh.position.set(cx-sunHoriz*orbitR, cy-Math.max(sunHeight,-0.15)*orbitR*0.9+18, cz-40*(orbitR/100));
+  moonMesh.quaternion.copy(camera.quaternion);
+  moonMesh.material.opacity = Math.max(0,1-dayFactor*2.2)*0.85;
 
   const hudClock = document.getElementById('clock');
   const totalMin = Math.floor(dayTime*24*60);
@@ -2240,6 +2387,7 @@ function gameLoop(nowMs){
     updateSurvivalStats(dt);
     updateMobs(dt, isNightTime());
     maybeRefreshStatBars();
+    ChunkManager.updateStreaming(player.pos.x, player.pos.z);
     ChunkManager.flushDirty();
   }
   if(simActive || GameState.state==='furnace'){
@@ -2257,10 +2405,12 @@ function gameLoop(nowMs){
 function init(){
   buildTextureAtlas();
   finalizeTextures();
-  generateWorld();
+  computeSpawnPoint();
   initScene();
+  buildCelestialBodies();
   initTargetHighlight();
-  ChunkManager.buildAll();
+  const spawnCx = Math.floor(World.spawnPoint.x/CHUNK_SIZE), spawnCz = Math.floor(World.spawnPoint.z/CHUNK_SIZE);
+  ChunkManager.loadAreaImmediate(spawnCx, spawnCz, 3);
   buildHotbarUI();
   setupCreativeInventory();
   refreshHotbarUI();
