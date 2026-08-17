@@ -398,7 +398,14 @@ function fbm2(x,y,octaves,lacunarity,gain){
 // CONSTANTS
 //////////////////////////////////////////////////////////////
 const CHUNK_SIZE = 16;
-const WORLD_HEIGHT = 48;
+const WORLD_HEIGHT = 106; // 3 bedrock layers + ~103 buildable blocks above
+const BEDROCK_LAYERS = 3;
+// Empirically calibrated against computeTerrainHeight's actual output
+// distribution (sampled: min 13, median 23, ~15th percentile 20) so sea
+// level floods a meaningful-but-not-overwhelming minority of low terrain
+// into lakes/oceans rather than either never triggering or drowning most
+// of the map.
+const SEA_LEVEL = 20;
 const RENDER_DISTANCE_CHUNKS = 5;   // radius, in chunks, that stays loaded/meshed around the player
 const CHUNK_UNLOAD_MARGIN = 2;      // extra chunks of hysteresis before unloading, avoids load/unload thrashing
 const CHUNKS_LOADED_PER_FRAME = 2;  // streaming budget so new terrain never stutters the frame
@@ -410,7 +417,8 @@ const TOOL_TIER_NAME = ['Hand','Wood','Stone','Iron'];
 //////////////////////////////////////////////////////////////
 const BLOCKS = {
   AIR:0, GRASS:1, DIRT:2, STONE:3, SAND:4, WATER:5, LOG:6, LEAVES:7,
-  PLANKS:8, COAL_ORE:9, IRON_ORE:10, GLASS:11, CRAFTING_TABLE:12, FURNACE:13
+  PLANKS:8, COAL_ORE:9, IRON_ORE:10, GLASS:11, CRAFTING_TABLE:12, FURNACE:13,
+  COBBLESTONE:25, BRICKS:26, BEDROCK:27, DOOR:28, BED:29, DOOR_OPEN:30
 };
 const ITEMS_EXTRA = {
   STICK:14, COAL:15, IRON_INGOT:16,
@@ -449,6 +457,30 @@ BlockDef[BLOCKS.CRAFTING_TABLE] = { name:'Crafting Table', solid:true, opaque:tr
   drop:BLOCKS.CRAFTING_TABLE, faces:{top:'table_top', bottom:'planks', side:'table_side'}, interact:'craftingTable' };
 BlockDef[BLOCKS.FURNACE] = { name:'Furnace', solid:true, opaque:true, hardness:2.0, tool:'pickaxe', tier:TOOL_TIER.WOOD,
   drop:BLOCKS.FURNACE, faces:{top:'furnace_top', bottom:'furnace_top', side:'furnace_side'}, interact:'furnace' };
+BlockDef[BLOCKS.COBBLESTONE] = { name:'Cobblestone', solid:true, opaque:true, hardness:1.4, tool:'pickaxe', tier:TOOL_TIER.WOOD,
+  drop:BLOCKS.COBBLESTONE, faces:{all:'cobblestone'} };
+BlockDef[BLOCKS.BRICKS] = { name:'Bricks', solid:true, opaque:true, hardness:1.6, tool:'pickaxe', tier:TOOL_TIER.WOOD,
+  drop:BLOCKS.BRICKS, faces:{all:'bricks'} };
+// Hardness:Infinity blocks survival mining (miningSecondsFor returns
+// Infinity, see updateMining's need===Infinity guard); creative-mode break
+// bypasses hardness entirely, so tryBreakBlockCreative ALSO has an explicit
+// bedrock guard - both paths need protecting independently.
+BlockDef[BLOCKS.BEDROCK] = { name:'Bedrock', solid:true, opaque:true, hardness:Infinity, tool:null, tier:0,
+  drop:null, faces:{all:'bedrock'} };
+// Doors are always solid (this voxel engine only has full-cube collision,
+// no partial-height/rotated sub-blocks) but toggle between two distinct
+// block ids on interact - closed (opaque) and open (see-through) - so they
+// at least visually and optically open even though they don't yet let you
+// walk through. DOOR_OPEN intentionally has no drop of its own; breaking
+// either state drops one Door item.
+BlockDef[BLOCKS.DOOR] = { name:'Door', solid:true, opaque:true, hardness:0.8, tool:null, tier:0,
+  drop:BLOCKS.DOOR, faces:{all:'door_closed'}, interact:'door' };
+BlockDef[BLOCKS.DOOR_OPEN] = { name:'Door', solid:true, opaque:false, hardness:0.8, tool:null, tier:0,
+  drop:BLOCKS.DOOR, faces:{all:'door_open'}, interact:'door' };
+// Simplified bed: right-clicking at night skips straight to morning (no
+// multiplayer sleep-sync/respawn-anchor mechanics).
+BlockDef[BLOCKS.BED] = { name:'Bed', solid:true, opaque:true, hardness:0.6, tool:null, tier:0,
+  drop:BLOCKS.BED, faces:{top:'bed_top', bottom:'planks', side:'bed_side'}, interact:'bed' };
 
 const ItemDef = {};
 for(const idStr in BlockDef){
@@ -485,7 +517,10 @@ function computeTerrainHeight(x,z){
   const n3 = fbm2(x*0.11+500, z*0.11+500, 2, 2.0, 0.5) * 0.22;
   const h = n*0.55 + n2*0.35 + n3;
   let height = 8 + Math.round(h*26);
-  return Math.max(2, Math.min(WORLD_HEIGHT-10, height));
+  // Floor raised to BEDROCK_LAYERS+2 (rather than the old flat 2) so every
+  // column keeps at least a couple of dirt/stone blocks above bedrock
+  // instead of bedrock poking straight up through the terrain surface.
+  return Math.max(BEDROCK_LAYERS+2, Math.min(WORLD_HEIGHT-10, height));
 }
 
 function generateChunkData(cx,cz){
@@ -497,17 +532,22 @@ function generateChunkData(cx,cz){
       const x=bx0+lx, z=bz0+lz;
       const height = computeTerrainHeight(x,z);
       heightMap[lz*CHUNK_SIZE+lx] = height;
+      const beach = height<=SEA_LEVEL+1;
       for(let y=0; y<WORLD_HEIGHT; y++){
         let id = BLOCKS.AIR;
-        if(y < height-3){
+        if(y < BEDROCK_LAYERS){
+          id = BLOCKS.BEDROCK;
+        } else if(y < height-3){
           id = BLOCKS.STONE;
           const r = hash3(x,y,z);
           if(y<9 && r<0.014) id = BLOCKS.IRON_ORE;
           else if(r<0.045) id = BLOCKS.COAL_ORE;
         } else if(y < height-1){
-          id = BLOCKS.DIRT;
+          id = beach ? BLOCKS.SAND : BLOCKS.DIRT;
         } else if(y < height){
-          id = BLOCKS.GRASS;
+          id = beach ? BLOCKS.SAND : BLOCKS.GRASS;
+        } else if(y < SEA_LEVEL){
+          id = BLOCKS.WATER; // floods any column whose surface sits below sea level
         }
         if(id!==BLOCKS.AIR) blocks[(y*CHUNK_SIZE*CHUNK_SIZE)+(lz*CHUNK_SIZE)+lx] = id;
       }
@@ -640,7 +680,7 @@ function maybeDecorateChunk(cx,cz){
       if(plantedTreeOrigins.has(originKey)) continue;
       plantedTreeOrigins.add(originKey);
       const height = computeTerrainHeight(x,z);
-      if(height<5) continue;
+      if(height<5 || height<=SEA_LEVEL+1) continue; // skip underwater/beach columns
       plantTreeAt(x,height,z);
     }
   }
@@ -650,7 +690,12 @@ function maybeDecorateChunk(cx,cz){
 // art (16x16 cells). Nothing here is copied from any existing
 // game's assets.
 //////////////////////////////////////////////////////////////
-const ATLAS_COLS = 8, ATLAS_ROWS = 5, CELL_PX = 16;
+const ATLAS_COLS = 8, ATLAS_ROWS = 7, CELL_PX = 32;
+// Scale factor relative to the original 16px-per-cell pixel-art baseline.
+// Hand-placed icon coordinates below (tools, hearts, ingots, etc.) were
+// designed at 16px and are multiplied by S so they scale up cleanly to fill
+// the higher-resolution cell instead of shrinking into a corner.
+const S = CELL_PX/16;
 const atlasCanvas = document.createElement('canvas');
 atlasCanvas.width = ATLAS_COLS*CELL_PX;
 atlasCanvas.height = ATLAS_ROWS*CELL_PX;
@@ -686,29 +731,75 @@ function shade(hex, amt){
   r=Math.max(0,Math.min(255,r+amt)); g=Math.max(0,Math.min(255,g+amt)); b=Math.max(0,Math.min(255,b+amt));
   return 'rgb('+r+','+g+','+b+')';
 }
+// Two-layer noise: coarse "blotches" (S x S physical pixels each) give a
+// painterly base instead of uniform TV-static, then a lighter per-pixel
+// grain pass on top adds fine detail. At the original 16px baseline (S=1)
+// this degrades back to the old flat per-pixel noise.
 function fillNoisy(ox,oy,baseHex,variance,rand){
-  for(let y=0;y<CELL_PX;y++){
-    for(let x=0;x<CELL_PX;x++){
+  for(let by=0; by<CELL_PX; by+=S){
+    for(let bx=0; bx<CELL_PX; bx+=S){
       const v=(rand()-0.5)*2*variance;
       actx.fillStyle = shade(baseHex, Math.round(v));
-      actx.fillRect(ox+x,oy+y,1,1);
+      actx.fillRect(ox+bx,oy+by,S,S);
     }
+  }
+  if(S>1){
+    const grain = variance*0.4;
+    actx.globalAlpha = 0.55;
+    for(let y=0;y<CELL_PX;y++){
+      for(let x=0;x<CELL_PX;x++){
+        if(rand()<0.45) continue;
+        const v=(rand()-0.5)*2*grain;
+        actx.fillStyle = shade(baseHex, Math.round(v));
+        actx.fillRect(ox+x,oy+y,1,1);
+      }
+    }
+    actx.globalAlpha = 1;
+  }
+}
+// Subtle inset border darkening - reads as baked ambient occlusion between
+// adjacent blocks and makes tiled surfaces (stone walls, plank floors) look
+// noticeably more detailed/defined at a distance. Skipped for translucent
+// materials (water/glass) where a visible seam would look wrong.
+function edgeShade(ox,oy,amt){
+  amt = amt===undefined ? 0.16 : amt;
+  actx.globalAlpha = amt;
+  actx.fillStyle = '#000';
+  actx.fillRect(ox,oy,CELL_PX,S);
+  actx.fillRect(ox,oy+CELL_PX-S,CELL_PX,S);
+  actx.fillRect(ox,oy,S,CELL_PX);
+  actx.fillRect(ox+CELL_PX-S,oy,S,CELL_PX);
+  actx.globalAlpha = 1;
+}
+// Small irregular blob cluster (a handful of jittered squares around a
+// center) used for ore flecks / pebbles - reads as far more organic than a
+// single flat rectangle, especially at higher resolution.
+function blob(ox,oy,cx,cy,n,size,rand){
+  for(let i=0;i<n;i++){
+    const jx = Math.round((rand()-0.5)*size*2.2), jy = Math.round((rand()-0.5)*size*2.2);
+    actx.fillRect(ox+cx+jx, oy+cy+jy, size, size);
   }
 }
 function drawToolIcon(ox,oy,kind,color){
   if(kind==='pick'){
     actx.fillStyle = '#6b4a2b';
-    for(let i=0;i<8;i++) actx.fillRect(ox+3+i, oy+11-i, 2,2);
+    for(let i=0;i<8;i++) actx.fillRect(ox+(3+i)*S, oy+(11-i)*S, 2*S,2*S);
     actx.fillStyle = color;
-    actx.fillRect(ox+2,oy+2,4,3);
-    actx.fillRect(ox+6,oy+1,4,3);
-    actx.fillRect(ox+10,oy+3,3,3);
+    actx.fillRect(ox+2*S,oy+2*S,4*S,3*S);
+    actx.fillRect(ox+6*S,oy+1*S,4*S,3*S);
+    actx.fillRect(ox+10*S,oy+3*S,3*S,3*S);
+    actx.globalAlpha = 0.25; actx.fillStyle = '#000';
+    actx.fillRect(ox+2*S,oy+4*S,4*S,S); actx.fillRect(ox+10*S,oy+5*S,3*S,S);
+    actx.globalAlpha = 1;
   } else if(kind==='sword'){
     actx.fillStyle = color;
-    actx.fillRect(ox+7,oy+1,2,9);
+    actx.fillRect(ox+7*S,oy+1*S,2*S,9*S);
+    actx.globalAlpha = 0.3; actx.fillStyle = '#fff';
+    actx.fillRect(ox+7*S,oy+1*S,S,9*S);
+    actx.globalAlpha = 1;
     actx.fillStyle = '#5a4632';
-    actx.fillRect(ox+5,oy+10,6,2);
-    actx.fillRect(ox+7,oy+12,2,3);
+    actx.fillRect(ox+5*S,oy+10*S,6*S,2*S);
+    actx.fillRect(ox+7*S,oy+12*S,2*S,3*S);
   }
 }
 const HEART_BITMAP = [
@@ -735,7 +826,7 @@ function drawBitmapIcon(ox,oy,bitmap,color,full){
     for(let c=0;c<bitmap[r].length;c++){
       if(!bitmap[r][c]) continue;
       if(!full && c>=4) continue;
-      actx.fillRect(ox+c*2, oy+2+r*2, 2,2);
+      actx.fillRect(ox+c*2*S, oy+(2+r*2)*S, 2*S,2*S);
     }
   }
 }
@@ -748,68 +839,129 @@ function buildTextureAtlas(){
 
   define('grass_top',(ox,oy,rand)=>{
     fillNoisy(ox,oy,'#6aa845',16,rand);
-    for(let i=0;i<10;i++){
+    for(let i=0;i<Math.round(14*S);i++){
       const x=Math.floor(rand()*CELL_PX), y=Math.floor(rand()*CELL_PX);
-      actx.fillStyle = rand()<0.5 ? '#7fbb57':'#5a9138';
-      actx.fillRect(ox+x,oy+y,1,1);
+      actx.fillStyle = rand()<0.5 ? '#8fcf63':'#4d7c2e';
+      actx.fillRect(ox+x,oy+y,S,S);
     }
+    edgeShade(ox,oy);
   });
   define('dirt',(ox,oy,rand)=>{
     fillNoisy(ox,oy,'#8a5a34',18,rand);
     actx.fillStyle='#6b431f';
-    for(let i=0;i<8;i++){
-      const x=Math.floor(rand()*(CELL_PX-2)), y=Math.floor(rand()*(CELL_PX-2));
-      actx.fillRect(ox+x,oy+y, 1+Math.floor(rand()*2), 1);
+    for(let i=0;i<Math.round(7*S);i++){
+      const x=2+Math.floor(rand()*(CELL_PX-4)), y=2+Math.floor(rand()*(CELL_PX-4));
+      blob(ox,oy,x,y, 3+Math.floor(rand()*3), Math.max(1,Math.round(S*0.6)), rand);
     }
+    actx.fillStyle='#a97a48';
+    for(let i=0;i<Math.round(5*S);i++){
+      const x=Math.floor(rand()*CELL_PX), y=Math.floor(rand()*CELL_PX);
+      actx.fillRect(ox+x,oy+y,S,S);
+    }
+    edgeShade(ox,oy);
   });
   define('grass_side',(ox,oy,rand)=>{
     fillNoisy(ox,oy,'#8a5a34',18,rand);
-    for(let y=0;y<5;y++){
+    const grassRows = 5*S;
+    for(let y=0;y<grassRows;y++){
+      const fringe = y >= grassRows-S;
       for(let x=0;x<CELL_PX;x++){
-        if(y===4 && rand()<0.45) continue;
+        if(fringe && rand()<0.45) continue;
         const v=(rand()-0.5)*32;
         actx.fillStyle = shade('#6aa845', Math.round(v));
         actx.fillRect(ox+x,oy+y,1,1);
       }
     }
+    actx.fillStyle = '#4d7c2e';
+    for(let i=0;i<Math.round(6*S);i++){
+      const x = Math.floor(rand()*CELL_PX);
+      const len = 1+Math.floor(rand()*S*1.5);
+      actx.fillRect(ox+x, oy+grassRows-S, 1, len);
+    }
+    edgeShade(ox,oy);
   });
   define('stone',(ox,oy,rand)=>{
     fillNoisy(ox,oy,'#8d8d8d',14,rand);
-    actx.fillStyle='#6f6f6f';
-    for(let i=0;i<6;i++){
-      const x=Math.floor(rand()*(CELL_PX-3)), y=Math.floor(rand()*(CELL_PX-3));
-      actx.fillRect(ox+x,oy+y,2+Math.floor(rand()*2),1);
+    actx.strokeStyle='#5f5f5f'; actx.lineWidth=Math.max(1,S*0.7);
+    for(let i=0;i<Math.round(2*S);i++){
+      actx.beginPath();
+      let x=2+rand()*(CELL_PX-4), y=2+rand()*(CELL_PX-4);
+      actx.moveTo(ox+x,oy+y);
+      const segs=2+Math.floor(rand()*2);
+      for(let s=0;s<segs;s++){ x+=(rand()-0.5)*10*S; y+=(rand()-0.5)*10*S; actx.lineTo(ox+x,oy+y); }
+      actx.stroke();
     }
+    actx.fillStyle='#c4c4c4';
+    for(let i=0;i<Math.round(5*S);i++){
+      const x=Math.floor(rand()*CELL_PX), y=Math.floor(rand()*CELL_PX);
+      actx.fillRect(ox+x,oy+y,S,S);
+    }
+    edgeShade(ox,oy);
   });
-  define('sand',(ox,oy,rand)=> fillNoisy(ox,oy,'#dcc987',12,rand));
+  define('sand',(ox,oy,rand)=>{
+    fillNoisy(ox,oy,'#dcc987',12,rand);
+    const band = Math.max(1,Math.round(S*1.5));
+    for(let y=0;y<CELL_PX;y+=band){
+      actx.globalAlpha=0.12;
+      actx.fillStyle = rand()<0.5 ? '#fff':'#000';
+      actx.fillRect(ox,oy+y,CELL_PX,1);
+      actx.globalAlpha=1;
+    }
+    actx.fillStyle='#b39a5c';
+    for(let i=0;i<Math.round(6*S);i++){
+      const x=Math.floor(rand()*CELL_PX), y=Math.floor(rand()*CELL_PX);
+      actx.fillRect(ox+x,oy+y,1,1);
+    }
+    edgeShade(ox,oy,0.08);
+  });
   define('water',(ox,oy,rand)=>{
     actx.globalAlpha=0.6;
     fillNoisy(ox,oy,'#3d72c9',10,rand);
     actx.globalAlpha=1;
-    actx.strokeStyle='rgba(255,255,255,0.35)';
-    for(let y=2;y<CELL_PX;y+=5){
-      actx.beginPath(); actx.moveTo(ox,oy+y); actx.lineTo(ox+CELL_PX,oy+y+1); actx.stroke();
+    actx.strokeStyle='rgba(255,255,255,0.4)';
+    actx.lineWidth = Math.max(1,S*0.6);
+    for(let y=2*S;y<CELL_PX;y+=5*S){
+      actx.beginPath(); actx.moveTo(ox,oy+y); actx.lineTo(ox+CELL_PX,oy+y+S); actx.stroke();
+    }
+    actx.fillStyle='rgba(255,255,255,0.55)';
+    for(let i=0;i<Math.round(4*S);i++){
+      const x=Math.floor(rand()*CELL_PX), y=Math.floor(rand()*CELL_PX);
+      actx.fillRect(ox+x,oy+y,S,1);
     }
   });
   define('log_side',(ox,oy,rand)=>{
     fillNoisy(ox,oy,'#6b4a2b',10,rand);
     actx.fillStyle = '#4f3620';
-    for(let i=0;i<4;i++){
+    for(let i=0;i<Math.round(4*S);i++){
       const x = Math.floor(rand()*CELL_PX);
       for(let y=0;y<CELL_PX;y++){ if(rand()<0.85) actx.fillRect(ox+x,oy+y,1,1); }
     }
+    actx.globalAlpha=0.3; actx.fillStyle='#2c1d10';
+    for(let i=0;i<Math.round(3*S);i++){
+      const y=Math.floor(rand()*CELL_PX);
+      actx.fillRect(ox,oy+y,CELL_PX,1);
+    }
+    actx.globalAlpha=1;
+    edgeShade(ox,oy);
   });
   define('log_top',(ox,oy,rand)=>{
     fillNoisy(ox,oy,'#c9a26a',10,rand);
-    actx.strokeStyle = '#8a6a3f'; actx.lineWidth = 1;
-    [3,5.5,7.5].forEach(r=>{ actx.beginPath(); actx.arc(ox+8,oy+8,r,0,Math.PI*2); actx.stroke(); });
+    actx.strokeStyle = '#8a6a3f'; actx.lineWidth = Math.max(1,S*0.6);
+    const cx=CELL_PX/2, cy=CELL_PX/2, rings = 3+S;
+    for(let i=1;i<=rings;i++){
+      actx.beginPath(); actx.arc(ox+cx,oy+cy, (i/rings)*(CELL_PX/2-1), 0, Math.PI*2); actx.stroke();
+    }
+    actx.fillStyle='#5a4128';
+    actx.fillRect(ox+cx-S/2,oy+cy-S/2,S,S);
+    edgeShade(ox,oy);
   });
   define('leaves',(ox,oy,rand)=>{
     for(let y=0;y<CELL_PX;y++){
       for(let x=0;x<CELL_PX;x++){
         if(rand()<0.8){
           const v=(rand()-0.5)*40;
-          actx.fillStyle=shade('#3f7a2e',Math.round(v));
+          const tone = rand()<0.15 ? '#5fa646' : '#3f7a2e';
+          actx.fillStyle=shade(tone,Math.round(v));
           actx.fillRect(ox+x,oy+y,1,1);
         }
       }
@@ -818,26 +970,120 @@ function buildTextureAtlas(){
   define('planks',(ox,oy,rand)=>{
     fillNoisy(ox,oy,'#ac7c4c',10,rand);
     actx.fillStyle='#7a5636';
-    for(let y=4;y<CELL_PX;y+=5) actx.fillRect(ox,oy+y,CELL_PX,1);
-    actx.fillStyle='rgba(0,0,0,0.15)';
-    for(let i=0;i<5;i++){ const x=Math.floor(rand()*CELL_PX); actx.fillRect(ox+x,oy,1,CELL_PX); }
+    for(let y=4*S-1;y<CELL_PX;y+=5*S) actx.fillRect(ox,oy+y,CELL_PX,Math.max(1,Math.round(S*0.6)));
+    actx.fillStyle='rgba(0,0,0,0.18)';
+    for(let i=0;i<Math.round(5*S);i++){ const x=Math.floor(rand()*CELL_PX); actx.fillRect(ox+x,oy,Math.max(1,Math.round(S*0.4)),CELL_PX); }
+    if(rand()<0.6){
+      const kx=4+Math.floor(rand()*(CELL_PX-8)), ky=2*S+Math.floor(rand()*Math.max(1,CELL_PX-4*S));
+      actx.fillStyle='#5a3d22';
+      actx.beginPath(); actx.arc(ox+kx,oy+ky, S*0.9, 0, Math.PI*2); actx.fill();
+      actx.strokeStyle='#3f2a17'; actx.lineWidth=1; actx.beginPath(); actx.arc(ox+kx,oy+ky,S*1.5,0,Math.PI*2); actx.stroke();
+    }
+    edgeShade(ox,oy);
   });
   define('coal_ore',(ox,oy,rand)=>{
     fillNoisy(ox,oy,'#8d8d8d',14,rand);
-    actx.fillStyle='#232323';
+    actx.fillStyle='#1a1a1a';
     for(let c=0;c<4;c++){
-      const cx=2+Math.floor(rand()*11), cy=2+Math.floor(rand()*11);
-      actx.fillRect(ox+cx,oy+cy,2,2);
-      if(rand()<0.6) actx.fillRect(ox+cx+1,oy+cy+1,2,2);
+      const cx=4+Math.floor(rand()*(CELL_PX-8)), cy=4+Math.floor(rand()*(CELL_PX-8));
+      blob(ox,oy,cx,cy, 4+Math.floor(rand()*3), Math.max(1,Math.round(S*0.8)), rand);
     }
+    edgeShade(ox,oy);
   });
   define('iron_ore',(ox,oy,rand)=>{
     fillNoisy(ox,oy,'#8d8d8d',14,rand);
     for(let c=0;c<4;c++){
-      const cx=2+Math.floor(rand()*11), cy=2+Math.floor(rand()*11);
+      const cx=4+Math.floor(rand()*(CELL_PX-8)), cy=4+Math.floor(rand()*(CELL_PX-8));
       actx.fillStyle = rand()<0.5 ? '#c99a6b' : '#d9b48a';
-      actx.fillRect(ox+cx,oy+cy,2,2);
+      blob(ox,oy,cx,cy, 3+Math.floor(rand()*3), Math.max(1,Math.round(S*0.8)), rand);
     }
+    actx.fillStyle='#f0dcb8';
+    for(let i=0;i<Math.round(2*S);i++){
+      const x=Math.floor(rand()*CELL_PX), y=Math.floor(rand()*CELL_PX);
+      actx.fillRect(ox+x,oy+y,1,1);
+    }
+    edgeShade(ox,oy);
+  });
+  define('cobblestone',(ox,oy,rand)=>{
+    fillNoisy(ox,oy,'#8a8a8a',12,rand);
+    actx.strokeStyle='#5a5a5a'; actx.lineWidth=Math.max(1,S*0.8);
+    for(let gy=0; gy<3; gy++){
+      for(let gx=0; gx<3; gx++){
+        const cx=(2+gx*5+(rand()-0.5)*2)*S, cy=(2+gy*5+(rand()-0.5)*2)*S;
+        actx.beginPath(); actx.arc(ox+cx,oy+cy, 2.4*S, 0, Math.PI*2); actx.stroke();
+      }
+    }
+    actx.fillStyle='#c2c2c2';
+    for(let i=0;i<Math.round(6*S);i++){
+      const x=Math.floor(rand()*CELL_PX), y=Math.floor(rand()*CELL_PX);
+      actx.fillRect(ox+x,oy+y,S,S);
+    }
+    edgeShade(ox,oy,0.2);
+  });
+  define('bricks',(ox,oy,rand)=>{
+    fillNoisy(ox,oy,'#9c4a36',10,rand);
+    actx.fillStyle='#c9c2ac';
+    const rowH = 4*S, brickW = 8*S;
+    for(let ry=0, row=0; ry<CELL_PX; ry+=rowH, row++){
+      actx.fillRect(ox,oy+ry,CELL_PX,Math.max(1,Math.round(S*0.5)));
+      const offset = (row%2)*brickW/2;
+      for(let bx=-brickW; bx<CELL_PX+brickW; bx+=brickW){
+        actx.fillRect(ox+bx+offset,oy+ry,Math.max(1,Math.round(S*0.5)),rowH);
+      }
+    }
+    edgeShade(ox,oy);
+  });
+  define('bedrock',(ox,oy,rand)=>{
+    fillNoisy(ox,oy,'#3a3a42',10,rand);
+    actx.fillStyle='#1c1c22';
+    for(let i=0;i<Math.round(10*S);i++){
+      const x=Math.floor(rand()*CELL_PX), y=Math.floor(rand()*CELL_PX);
+      actx.fillRect(ox+x,oy+y, 1+Math.floor(rand()*S), 1+Math.floor(rand()*S));
+    }
+    actx.fillStyle='#57576a';
+    for(let i=0;i<Math.round(5*S);i++){
+      const x=Math.floor(rand()*CELL_PX), y=Math.floor(rand()*CELL_PX);
+      actx.fillRect(ox+x,oy+y,S,S);
+    }
+    edgeShade(ox,oy,0.25);
+  });
+  define('door_closed',(ox,oy,rand)=>{
+    fillNoisy(ox,oy,'#8a6238',8,rand);
+    actx.strokeStyle='#5a3d22'; actx.lineWidth=Math.max(1,S*0.6);
+    actx.strokeRect(ox+1.5*S,oy+0.5*S,13*S,15*S);
+    actx.strokeRect(ox+3*S,oy+2*S,10*S,5.5*S);
+    actx.strokeRect(ox+3*S,oy+8.5*S,10*S,5.5*S);
+    actx.fillStyle='#e8c97a';
+    actx.beginPath(); actx.arc(ox+11.5*S,oy+8*S, Math.max(1,S*0.6), 0, Math.PI*2); actx.fill();
+    edgeShade(ox,oy);
+  });
+  define('door_open',(ox,oy,rand)=>{
+    // Only the frame is opaque - the center is left undrawn (transparent
+    // canvas) so the cutout material shows straight through the doorway.
+    actx.fillStyle='#6b4a2b';
+    actx.fillRect(ox,oy,CELL_PX,1.5*S);
+    actx.fillRect(ox,oy+14.5*S,CELL_PX,1.5*S);
+    actx.fillRect(ox,oy,1.5*S,CELL_PX);
+    actx.fillRect(ox+CELL_PX-1.5*S,oy,1.5*S,CELL_PX);
+    actx.fillStyle='#4f3620';
+    actx.fillRect(ox,oy,CELL_PX,Math.max(1,Math.round(S*0.6)));
+    actx.fillRect(ox,oy+CELL_PX-Math.max(1,Math.round(S*0.6)),CELL_PX,Math.max(1,Math.round(S*0.6)));
+  });
+  define('bed_top',(ox,oy,rand)=>{
+    fillNoisy(ox,oy,'#b23a3a',10,rand);
+    actx.fillStyle='#e8e0c8';
+    actx.fillRect(ox+1*S,oy+1*S,14*S,3.5*S);
+    actx.strokeStyle='rgba(0,0,0,0.15)';
+    for(let i=0;i<3;i++){ actx.beginPath(); actx.moveTo(ox+1*S,oy+(5+i*3.5)*S); actx.lineTo(ox+15*S,oy+(5+i*3.5)*S); actx.stroke(); }
+    edgeShade(ox,oy);
+  });
+  define('bed_side',(ox,oy,rand)=>{
+    fillNoisy(ox,oy,'#8a5a34',10,rand);
+    actx.fillStyle='#b23a3a';
+    actx.fillRect(ox,oy,CELL_PX,8*S);
+    actx.fillStyle='#7a5636';
+    actx.fillRect(ox+1*S,oy+11*S,3*S,5*S); actx.fillRect(ox+12*S,oy+11*S,3*S,5*S);
+    edgeShade(ox,oy);
   });
   define('glass',(ox,oy,rand)=>{
     actx.globalAlpha=0.38;
@@ -847,47 +1093,75 @@ function buildTextureAtlas(){
     actx.strokeStyle='rgba(255,255,255,0.55)';
     actx.strokeRect(ox+0.5,oy+0.5,CELL_PX-1,CELL_PX-1);
     actx.strokeStyle='rgba(255,255,255,0.3)';
-    actx.beginPath(); actx.moveTo(ox+3,oy+12); actx.lineTo(ox+7,oy+4); actx.stroke();
+    actx.lineWidth = Math.max(1,S*0.6);
+    actx.beginPath(); actx.moveTo(ox+3*S,oy+12*S); actx.lineTo(ox+7*S,oy+4*S); actx.stroke();
+    actx.beginPath(); actx.moveTo(ox+9*S,oy+13*S); actx.lineTo(ox+12*S,oy+7*S); actx.stroke();
+    actx.globalAlpha=0.25; actx.fillStyle='#fff';
+    actx.fillRect(ox+2*S,oy+2*S,S,S);
+    actx.globalAlpha=1;
   });
   define('table_top',(ox,oy,rand)=>{
     fillNoisy(ox,oy,'#a97c50',10,rand);
-    actx.strokeStyle='#5a3d22';
-    actx.strokeRect(ox+2.5,oy+2.5,11,11);
+    actx.strokeStyle='#5a3d22'; actx.lineWidth=Math.max(1,S*0.5);
+    actx.strokeRect(ox+2.5*S,oy+2.5*S,11*S,11*S);
     for(let i=1;i<3;i++){
-      actx.beginPath(); actx.moveTo(ox+2,oy+2+i*3.6); actx.lineTo(ox+14,oy+2+i*3.6); actx.stroke();
-      actx.beginPath(); actx.moveTo(ox+2+i*3.6,oy+2); actx.lineTo(ox+2+i*3.6,oy+14); actx.stroke();
+      actx.beginPath(); actx.moveTo(ox+2*S,oy+(2+i*3.6)*S); actx.lineTo(ox+14*S,oy+(2+i*3.6)*S); actx.stroke();
+      actx.beginPath(); actx.moveTo(ox+(2+i*3.6)*S,oy+2*S); actx.lineTo(ox+(2+i*3.6)*S,oy+14*S); actx.stroke();
     }
+    actx.fillStyle='#3f2a17';
+    [[3,3],[12,3],[3,12],[12,12]].forEach(function(p){ actx.fillRect(ox+p[0]*S,oy+p[1]*S,S,S); });
+    edgeShade(ox,oy);
   });
   define('table_side',(ox,oy,rand)=>{
     fillNoisy(ox,oy,'#96703f',10,rand);
     actx.fillStyle='#5a3d22';
-    actx.fillRect(ox+1,oy+1,2,CELL_PX-2);
-    actx.fillRect(ox+CELL_PX-3,oy+1,2,CELL_PX-2);
+    actx.fillRect(ox+1*S,oy+1*S,2*S,CELL_PX-2*S);
+    actx.fillRect(ox+CELL_PX-3*S,oy+1*S,2*S,CELL_PX-2*S);
+    actx.fillRect(ox+1*S,oy+CELL_PX-3*S,CELL_PX-2*S,2*S);
+    edgeShade(ox,oy);
   });
   define('furnace_side',(ox,oy,rand)=>{
     fillNoisy(ox,oy,'#8d8d8d',10,rand);
-    actx.fillStyle='#232323'; actx.fillRect(ox+4,oy+8,8,6);
-    actx.fillStyle='#5a5a5a'; actx.fillRect(ox+3,oy+7,10,1);
-    actx.fillStyle='#c96a3a'; actx.fillRect(ox+6,oy+10,2,2);
-    actx.fillStyle='#333'; actx.fillRect(ox+3,oy+2,2,2); actx.fillRect(ox+6,oy+2,2,2);
+    actx.fillStyle='#5a5a5a'; actx.fillRect(ox+3*S,oy+7*S,10*S,S);
+    actx.fillStyle='#1a1a1a'; actx.fillRect(ox+4*S,oy+8*S,8*S,6*S);
+    const glow = actx.createLinearGradient(ox+6*S,oy+9*S,ox+10*S,oy+13*S);
+    glow.addColorStop(0,'#ffcf6a'); glow.addColorStop(1,'#c96a3a');
+    actx.fillStyle = glow;
+    actx.fillRect(ox+6*S,oy+10*S,2*S,2*S);
+    actx.fillStyle='#333';
+    actx.fillRect(ox+3*S,oy+2*S,2*S,2*S); actx.fillRect(ox+6*S,oy+2*S,2*S,2*S);
+    actx.fillRect(ox+9*S,oy+2*S,2*S,2*S); actx.fillRect(ox+12*S,oy+2*S,2*S,2*S);
+    edgeShade(ox,oy);
   });
   define('furnace_top',(ox,oy,rand)=>{
     fillNoisy(ox,oy,'#8d8d8d',10,rand);
-    actx.fillStyle='#5f5f5f'; actx.fillRect(ox+3,oy+3,10,10);
-    actx.fillStyle='#8d8d8d'; actx.fillRect(ox+4,oy+4,8,8);
+    actx.fillStyle='#5f5f5f'; actx.fillRect(ox+3*S,oy+3*S,10*S,10*S);
+    actx.fillStyle='#3a3a3a';
+    const holeSize = Math.max(1,Math.round(S*0.8)), gap = Math.max(2,Math.round(S*1.6));
+    for(let gy=0; gy<3; gy++){
+      for(let gx=0; gx<3; gx++){
+        actx.fillRect(ox+5*S+gx*gap, oy+5*S+gy*gap, holeSize, holeSize);
+      }
+    }
+    edgeShade(ox,oy);
   });
   define('stick',(ox,oy)=>{
     actx.fillStyle = '#b98a4e';
-    for(let i=0;i<10;i++) actx.fillRect(ox+3+i, oy+12-i, 2,2);
+    for(let i=0;i<10;i++) actx.fillRect(ox+(3+i)*S, oy+(12-i)*S, 2*S,2*S);
+    actx.globalAlpha=0.3; actx.fillStyle='#7a5636';
+    for(let i=0;i<10;i++) actx.fillRect(ox+(3+i)*S, oy+(13-i)*S, 2*S,S);
+    actx.globalAlpha=1;
   });
   define('coal_item',(ox,oy)=>{
-    actx.fillStyle='#2b2b2b'; actx.fillRect(ox+5,oy+6,6,5); actx.fillRect(ox+6,oy+5,4,1); actx.fillRect(ox+4,oy+8,1,2);
-    actx.fillStyle='#4a4a4a'; actx.fillRect(ox+6,oy+7,2,1);
+    actx.fillStyle='#2b2b2b'; actx.fillRect(ox+5*S,oy+6*S,6*S,5*S); actx.fillRect(ox+6*S,oy+5*S,4*S,S); actx.fillRect(ox+4*S,oy+8*S,S,2*S);
+    actx.fillStyle='#4a4a4a'; actx.fillRect(ox+6*S,oy+7*S,2*S,S);
+    actx.globalAlpha=0.5; actx.fillStyle='#7a7a7a'; actx.fillRect(ox+7*S,oy+6*S,S,S); actx.globalAlpha=1;
   });
   define('iron_ingot',(ox,oy)=>{
-    actx.fillStyle='#cfcfcf'; actx.fillRect(ox+3,oy+6,10,4);
-    actx.fillStyle='#e8e8e8'; actx.fillRect(ox+3,oy+6,10,1);
-    actx.fillStyle='#9a9a9a'; actx.fillRect(ox+3,oy+9,10,1);
+    actx.fillStyle='#cfcfcf'; actx.fillRect(ox+3*S,oy+6*S,10*S,4*S);
+    actx.fillStyle='#f2f2f2'; actx.fillRect(ox+3*S,oy+6*S,10*S,S);
+    actx.fillStyle='#9a9a9a'; actx.fillRect(ox+3*S,oy+9*S,10*S,S);
+    actx.globalAlpha=0.4; actx.fillStyle='#fff'; actx.fillRect(ox+4*S,oy+7*S,3*S,S); actx.globalAlpha=1;
   });
   define('pick_wood',(ox,oy)=>drawToolIcon(ox,oy,'pick','#a97c50'));
   define('pick_stone',(ox,oy)=>drawToolIcon(ox,oy,'pick','#9a9a9a'));
@@ -896,14 +1170,15 @@ function buildTextureAtlas(){
   define('sword_stone',(ox,oy)=>drawToolIcon(ox,oy,'sword','#b0b0b0'));
   define('sword_iron',(ox,oy)=>drawToolIcon(ox,oy,'sword','#f0f0f0'));
   define('raw_food',(ox,oy)=>{
-    actx.fillStyle='#c9584a'; actx.fillRect(ox+4,oy+5,8,6);
-    actx.fillStyle='#e08a7a'; actx.fillRect(ox+5,oy+6,3,2);
-    actx.fillStyle='#8a3a2f'; actx.fillRect(ox+4,oy+10,8,1);
+    actx.fillStyle='#c9584a'; actx.fillRect(ox+4*S,oy+5*S,8*S,6*S);
+    actx.fillStyle='#e08a7a'; actx.fillRect(ox+5*S,oy+6*S,3*S,2*S);
+    actx.fillStyle='#8a3a2f'; actx.fillRect(ox+4*S,oy+10*S,8*S,S);
+    actx.globalAlpha=0.3; actx.fillStyle='#fff'; actx.fillRect(ox+9*S,oy+6*S,S,3*S); actx.globalAlpha=1;
   });
   define('cooked_food',(ox,oy)=>{
-    actx.fillStyle='#a5713f'; actx.fillRect(ox+4,oy+5,8,6);
-    actx.fillStyle='#c98f52'; actx.fillRect(ox+5,oy+6,3,2);
-    actx.fillStyle='#5a3a1f'; actx.fillRect(ox+5,oy+6,1,4); actx.fillRect(ox+8,oy+6,1,4);
+    actx.fillStyle='#a5713f'; actx.fillRect(ox+4*S,oy+5*S,8*S,6*S);
+    actx.fillStyle='#c98f52'; actx.fillRect(ox+5*S,oy+6*S,3*S,2*S);
+    actx.fillStyle='#5a3a1f'; actx.fillRect(ox+5*S,oy+6*S,S,4*S); actx.fillRect(ox+8*S,oy+6*S,S,4*S);
   });
   define('heart_full',(ox,oy)=>drawBitmapIcon(ox,oy,HEART_BITMAP,'#d23c3c',true));
   define('heart_half',(ox,oy)=>drawBitmapIcon(ox,oy,HEART_BITMAP,'#d23c3c',false));
@@ -917,6 +1192,7 @@ const RENDER_LAYER = {};
 RENDER_LAYER[BLOCKS.LEAVES] = 'cutout';
 RENDER_LAYER[BLOCKS.WATER] = 'glass';
 RENDER_LAYER[BLOCKS.GLASS] = 'glass';
+RENDER_LAYER[BLOCKS.DOOR_OPEN] = 'cutout';
 function blockRenderLayer(id){ return RENDER_LAYER[id] || 'opaque'; }
 
 function resolveBlockFaceUV(blockId, dir){
@@ -947,6 +1223,36 @@ function finalizeTextures(){
   matGlass = new THREE.MeshLambertMaterial({ map:atlasTexture, vertexColors:true, transparent:true, depthWrite:false, side:THREE.DoubleSide });
 }
 
+// Animates ONLY the water cell of the shared atlas canvas (a scrolling wave
+// pattern + drifting glints), then flags the CanvasTexture dirty. Every
+// water face in every chunk samples this same small region, so redrawing
+// just that cell makes all water everywhere ripple in sync without touching
+// any mesh geometry. Throttled from the caller so this isn't a full canvas
+// redraw every single frame.
+let waterAnimTime = 0, waterAnimAcc = 0;
+function animateWaterTexture(dt){
+  if(!AtlasUV.water || !atlasTexture) return;
+  waterAnimTime += dt;
+  const cell = AtlasUV.water, ox=cell.px, oy=cell.py;
+  actx.globalAlpha=0.6;
+  actx.fillStyle='#3d72c9';
+  actx.fillRect(ox,oy,CELL_PX,CELL_PX);
+  actx.globalAlpha=1;
+  actx.strokeStyle='rgba(255,255,255,0.4)';
+  actx.lineWidth = Math.max(1,S*0.6);
+  const band = 5*S, shift = (waterAnimTime*7)%band;
+  for(let y=-band; y<CELL_PX+band; y+=band){
+    const yy=y+shift;
+    actx.beginPath(); actx.moveTo(ox,oy+yy); actx.lineTo(ox+CELL_PX,oy+yy+S); actx.stroke();
+  }
+  actx.fillStyle='rgba(255,255,255,0.5)';
+  const glints = Math.round(3*S);
+  for(let i=0;i<glints;i++){
+    const x=(i*37+Math.floor(waterAnimTime*10))%CELL_PX, y=(i*23+Math.floor(waterAnimTime*16))%CELL_PX;
+    actx.fillRect(ox+x,oy+y,S,1);
+  }
+  atlasTexture.needsUpdate = true;
+}
 function getItemIconCell(itemId){
   const idef = ItemDef[itemId];
   if(!idef) return null;
@@ -1118,6 +1424,11 @@ const ChunkManager = {
       geo.setIndex(buf.idx);
       const mesh = new THREE.Mesh(geo, mats[layer]);
       mesh.userData.chunkKey = key;
+      // Water/glass skip shadow-casting (a translucent surface throwing a
+      // hard dark shadow reads as wrong, and it's extra draw cost for
+      // little visual gain) but still receive shadows cast onto them.
+      mesh.castShadow = layer!=='glass';
+      mesh.receiveShadow = true;
       scene.add(mesh);
       entry[layer] = mesh;
     }
@@ -1192,6 +1503,12 @@ function initScene(){
   renderer.setPixelRatio(Math.min(window.devicePixelRatio||1, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
   if('outputColorSpace' in renderer) renderer.outputColorSpace = THREE.SRGBColorSpace;
+  // Modest shadow map (not soft/PCF-heavy) with a tight, player-following
+  // frustum (set up below and re-centered every frame in updateDayNight) -
+  // covering the whole render distance at good resolution would need a much
+  // larger map than is worth the cost here.
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFShadowMap;
 
   ambientLight = new THREE.AmbientLight(0xffffff, 0.55);
   scene.add(ambientLight);
@@ -1199,6 +1516,16 @@ function initScene(){
   scene.add(hemiLight);
   sunLight = new THREE.DirectionalLight(0xffffff, 1.0);
   sunLight.position.set(40,60,20);
+  sunLight.castShadow = true;
+  sunLight.shadow.mapSize.set(1024,1024);
+  sunLight.shadow.camera.near = 1;
+  sunLight.shadow.camera.far = 220;
+  const SHADOW_SPAN = 32;
+  sunLight.shadow.camera.left = -SHADOW_SPAN;
+  sunLight.shadow.camera.right = SHADOW_SPAN;
+  sunLight.shadow.camera.top = SHADOW_SPAN;
+  sunLight.shadow.camera.bottom = -SHADOW_SPAN;
+  sunLight.shadow.bias = -0.0025;
   scene.add(sunLight);
   scene.add(sunLight.target);
 
@@ -1257,7 +1584,7 @@ const GameState = { state:'menu' }; // menu | playing | paused | inventory | cra
 // PLAYER
 //////////////////////////////////////////////////////////////
 const PLAYER_WIDTH=0.6, PLAYER_HEIGHT=1.8, EYE_HEIGHT=1.62;
-const GRAVITY=-24, JUMP_SPEED=7.4, WALK_SPEED=4.3, SPRINT_SPEED=5.6, FLY_SPEED=8.5, FLY_VERT_SPEED=6;
+const GRAVITY=-24, JUMP_SPEED=7.4, WALK_SPEED=4.3, SPRINT_SPEED=5.6, CROUCH_SPEED=1.8, FLY_SPEED=8.5, FLY_VERT_SPEED=6;
 const REACH_DISTANCE=6;
 
 function makeEmptySlots(n){ const a=new Array(n); for(let i=0;i<n;i++) a[i]=null; return a; }
@@ -1266,7 +1593,7 @@ const player = {
   pos: new THREE.Vector3(0, WORLD_HEIGHT, 0),
   vel: new THREE.Vector3(0,0,0),
   yaw:0, pitch:0,
-  onGround:false, flying:false,
+  onGround:false, flying:false, crouching:false,
   mode:'creative',
   health:20, maxHealth:20,
   hunger:20, maxHunger:20,
@@ -1411,8 +1738,11 @@ function updatePlayerPhysics(dt){
   if(len>0){ moveX/=len; moveZ/=len; }
 
   const shiftHeld = Input.keys['ShiftLeft']||Input.keys['ShiftRight'];
+  const crouchHeld = Input.keys['ControlLeft']||Input.keys['ControlRight'];
+  p.crouching = !!crouchHeld && !(p.mode==='creative' && p.flying);
   let speed = WALK_SPEED;
-  if(p.mode==='survival' && shiftHeld) speed = SPRINT_SPEED;
+  if(p.mode==='survival' && shiftHeld && !p.crouching) speed = SPRINT_SPEED;
+  if(p.crouching) speed = CROUCH_SPEED;
   if(p.mode==='creative' && p.flying) speed = FLY_SPEED;
 
   if(p.mode==='creative' && p.flying){
@@ -1428,6 +1758,7 @@ function updatePlayerPhysics(dt){
     if(Input.keys['Space'] && p.onGround){
       p.vel.y = JUMP_SPEED; p.onGround=false;
       if(p.mode==='survival') p.hunger = Math.max(0,p.hunger-0.05);
+      playSound('jump');
     }
   }
 
@@ -1451,7 +1782,7 @@ function updatePlayerPhysics(dt){
   }
   if(p.pos.y < -24){ respawnPlayer(); if(p.mode==='survival') damagePlayer(4,'void'); }
 
-  camera.position.set(p.pos.x, p.pos.y+EYE_HEIGHT, p.pos.z);
+  camera.position.set(p.pos.x, p.pos.y+(p.crouching?EYE_HEIGHT-0.3:EYE_HEIGHT), p.pos.z);
   camera.rotation.y = p.yaw;
   camera.rotation.x = p.pitch;
 }
@@ -1534,7 +1865,7 @@ function tryBreakBlockCreative(){
   if(!currentTarget) return;
   const {x,y,z} = currentTarget;
   const id = World.get(x,y,z);
-  if(id===BLOCKS.AIR) return;
+  if(id===BLOCKS.AIR || id===BLOCKS.BEDROCK) return;
   World.set(x,y,z,BLOCKS.AIR);
   breakProgress=0; breakTargetKey=null;
 }
@@ -1558,10 +1889,13 @@ function updateMining(dt){
   if(breakProgress>=1){
     const def = BlockDef[id];
     const {x,y,z} = currentTarget;
-    if(def.drop!=null) addItemToInventory(def.drop,1);
+    // Pops out as a physical ground item (matching real Minecraft) instead
+    // of jumping straight into the hotbar - the player has to walk over it.
+    if(def.drop!=null) spawnItemEntity(x+0.5, y+0.3, z+0.5, def.drop, 1);
     World.set(x,y,z,BLOCKS.AIR);
     breakProgress=0; breakTargetKey=null;
     hideBreakBar();
+    playSound('break');
     refreshHotbarUI();
     const heldSlot = player.hotbar[player.selectedHotbar];
     if(def.tool==='pickaxe' && heldSlot && heldSlot.durability!=null){
@@ -1598,6 +1932,7 @@ function tryPlaceOrInteract(){
   if(wouldPlaceInsidePlayer(px,py,pz)) return;
   if(World.get(px,py,pz)!==BLOCKS.AIR) return;
   World.set(px,py,pz,stack.id);
+  playSound('place');
   if(player.mode!=='creative'){
     stack.count--;
     if(stack.count<=0) player.hotbar[player.selectedHotbar]=null;
@@ -1664,6 +1999,11 @@ const RECIPES = [
   { id:'planks', shapeless:true, inputs:[{item:BLOCKS.LOG,count:1}], output:{item:BLOCKS.PLANKS,count:4} },
   { id:'table', shapeless:true, minGrid:2, inputs:[{item:BLOCKS.PLANKS,count:4}], output:{item:BLOCKS.CRAFTING_TABLE,count:1} },
   { id:'furnace', shapeless:true, minGrid:3, inputs:[{item:BLOCKS.STONE,count:8}], output:{item:BLOCKS.FURNACE,count:1} },
+  // Placed after 'table'/'furnace' (higher thresholds on the same single
+  // ingredient) so matchRecipe's first-match-wins scan still finds those
+  // first when the grid holds enough Stone/Planks for them - see the
+  // 'sticks vs table' collision this session hit for why order matters here.
+  { id:'cobblestone', shapeless:true, inputs:[{item:BLOCKS.STONE,count:1}], output:{item:BLOCKS.COBBLESTONE,count:1} },
   { id:'sticks', shaped:true, pattern:['P','P'], key:{P:BLOCKS.PLANKS}, output:{item:ITEMS_EXTRA.STICK,count:4} },
   { id:'pick_wood', shaped:true, pattern:['PPP','.S.','.S.'], key:{P:BLOCKS.PLANKS,S:ITEMS_EXTRA.STICK}, output:{item:ITEMS_EXTRA.PICK_WOOD,count:1} },
   { id:'pick_stone', shaped:true, pattern:['PPP','.S.','.S.'], key:{P:BLOCKS.STONE,S:ITEMS_EXTRA.STICK}, output:{item:ITEMS_EXTRA.PICK_STONE,count:1} },
@@ -1671,10 +2011,21 @@ const RECIPES = [
   { id:'sword_wood', shaped:true, pattern:['P','P','S'], key:{P:BLOCKS.PLANKS,S:ITEMS_EXTRA.STICK}, output:{item:ITEMS_EXTRA.SWORD_WOOD,count:1} },
   { id:'sword_stone', shaped:true, pattern:['P','P','S'], key:{P:BLOCKS.STONE,S:ITEMS_EXTRA.STICK}, output:{item:ITEMS_EXTRA.SWORD_STONE,count:1} },
   { id:'sword_iron', shaped:true, pattern:['P','P','S'], key:{P:ITEMS_EXTRA.IRON_INGOT,S:ITEMS_EXTRA.STICK}, output:{item:ITEMS_EXTRA.SWORD_IRON,count:1} },
+  // Door: 2 columns x 3 rows, planks with a stick handle in the middle.
+  // (A pure-planks pattern would silently collide with the shapeless
+  // 'table' recipe - ANY 4+ planks of one type matches it before a shaped
+  // pattern is ever checked - making the shaped recipe unreachable. Mixing
+  // in a second ingredient type sidesteps that; caught by this session's
+  // own regression test, same class of bug as the earlier sticks/table one.)
+  { id:'door', shaped:true, pattern:['PP','PS','PP'], key:{P:BLOCKS.PLANKS,S:ITEMS_EXTRA.STICK}, output:{item:BLOCKS.DOOR,count:2} },
+  // Bed: plank surface over a stick-leg frame, 3 wide x 2 tall. Also
+  // deliberately mixed ingredients for the same reason as the door above.
+  { id:'bed', shaped:true, pattern:['PPP','SSS'], key:{P:BLOCKS.PLANKS,S:ITEMS_EXTRA.STICK}, output:{item:BLOCKS.BED,count:1} },
 ];
 const SMELT_RECIPES = [
   { input:BLOCKS.IRON_ORE, output:ITEMS_EXTRA.IRON_INGOT, time:4 },
   { input:BLOCKS.SAND, output:BLOCKS.GLASS, time:3 },
+  { input:BLOCKS.STONE, output:BLOCKS.BRICKS, time:4 },
 ];
 const FUEL_ITEMS = {};
 FUEL_ITEMS[ITEMS_EXTRA.COAL] = 8;
@@ -1955,6 +2306,7 @@ function collectCraftOutput(gridArr, w, h, refreshFn){
   if(uiCursorStack) uiCursorStack.count += r.output.count;
   else uiCursorStack = {id:r.output.item, count:r.output.count, durability:itemDurabilityMax(r.output.item)};
   updateHeldCursorVisual(lastMouseX,lastMouseY);
+  playSound('craft');
   refreshFn();
 }
 // Shift+click on a crafting result: craft it and send it straight to the
@@ -2046,6 +2398,31 @@ function refreshInventoryPanel(){
 function openInteract(kind,x,y,z){
   if(kind==='craftingTable') openCraftingTablePanel(x,y,z);
   else if(kind==='furnace') openFurnacePanel(x,y,z);
+  else if(kind==='door') toggleDoor(x,y,z);
+  else if(kind==='bed') useBed(x,y,z);
+}
+// Doors toggle between two block ids (closed/open) rather than a per-
+// instance state flag - simplest fit for this engine's static per-id
+// BlockDef model. They stay solid either way (full-cube-only collision) but
+// visually swing open and let you see through (see DOOR_OPEN's 'cutout'
+// render layer) - a stated simplification short of true walk-through doors.
+function toggleDoor(x,y,z){
+  const id = World.get(x,y,z);
+  if(id===BLOCKS.DOOR){ World.set(x,y,z,BLOCKS.DOOR_OPEN); playSound('door'); }
+  else if(id===BLOCKS.DOOR_OPEN){ World.set(x,y,z,BLOCKS.DOOR); playSound('door'); }
+}
+// Simplified sleep: right-clicking a bed at night jumps straight to
+// morning, matching the practical effect of vanilla sleep without
+// multiplayer sleep-sync or a respawn-anchor system.
+function useBed(x,y,z){
+  if(isNightTime()){
+    dayTime = 0.25;
+    updateDayNight(0);
+    showToast('You wake up feeling refreshed.');
+    playSound('bed');
+  } else {
+    showToast('You can only sleep at night.');
+  }
 }
 function openCraftingTablePanel(){
   GameState.state='crafting';
@@ -2247,6 +2624,7 @@ function damagePlayer(amount, source){
   if(player.dead || player.mode==='creative') return;
   player.health = Math.max(0, player.health-amount);
   flashDamageVignette();
+  playSound('damage');
   if(player.health<=0) killPlayer(source);
 }
 function killPlayer(cause){
@@ -2314,39 +2692,54 @@ const MAX_MOBS = 10;
 const mobs = [];
 let mobIdCounter = 1;
 let mobSpawnTimer = 5;
+// Per-kind stats table. 'critter' and 'hostile' values are an exact extract
+// of what used to be inline ternaries (ids/behavior unchanged so existing
+// tests that spawn 'critter'/'hostile' by name keep working identically);
+// 'rabbit' and 'spider' are new kinds added alongside them.
+const MOB_STATS = {
+  critter: { health:6, speed:1.0, bodyColor:0xd9b48a, headColor:0xe8c9a0, legColor:0xc9a26a, scale:1, passive:true },
+  rabbit:  { health:3, speed:2.0, bodyColor:0xe8e4da, headColor:0xf5f0e8, legColor:0xd8d2c4, scale:0.6, passive:true, flees:true },
+  hostile: { health:10, chaseSpeed:1.8, wanderSpeed:0.8, bodyColor:0x3a4a3a, headColor:0x2e3a2e, legColor:0x232b23, eyeColor:0xff3030, scale:1, passive:false },
+  spider:  { health:8, chaseSpeed:2.6, wanderSpeed:1.2, bodyColor:0x18181c, headColor:0x101013, legColor:0x0c0c0e, eyeColor:0xb030ff, scale:1, passive:false },
+};
 
 function createMobMesh(kind){
+  const stats = MOB_STATS[kind] || MOB_STATS.critter;
   const group = new THREE.Group();
-  const bodyMat = new THREE.MeshLambertMaterial({color: kind==='critter'?0xd9b48a:0x3a4a3a});
+  const bodyMat = new THREE.MeshLambertMaterial({color: stats.bodyColor});
   const body = new THREE.Mesh(new THREE.BoxGeometry(0.5,0.4,0.7), bodyMat);
   body.position.y=0.35; group.add(body);
-  const headMat = new THREE.MeshLambertMaterial({color: kind==='critter'?0xe8c9a0:0x2e3a2e});
+  const headMat = new THREE.MeshLambertMaterial({color: stats.headColor});
   const head = new THREE.Mesh(new THREE.BoxGeometry(0.32,0.32,0.32), headMat);
   head.position.set(0,0.55,0.45); group.add(head);
-  if(kind==='hostile'){
-    const eyeMat = new THREE.MeshBasicMaterial({color:0xff3030});
+  if(!stats.passive){
+    const eyeMat = new THREE.MeshBasicMaterial({color: stats.eyeColor||0xff3030});
     const eyeGeo = new THREE.BoxGeometry(0.06,0.06,0.04);
     const eyeL=new THREE.Mesh(eyeGeo,eyeMat); eyeL.position.set(-0.09,0.58,0.62); group.add(eyeL);
     const eyeR=new THREE.Mesh(eyeGeo,eyeMat); eyeR.position.set(0.09,0.58,0.62); group.add(eyeR);
   }
-  const legMat = new THREE.MeshLambertMaterial({color: kind==='critter'?0xc9a26a:0x232b23});
-  const legOffsets = [[-0.15,-0.2],[0.15,-0.2],[-0.15,0.2],[0.15,0.2]];
+  const legMat = new THREE.MeshLambertMaterial({color: stats.legColor});
+  const legOffsets = kind==='spider'
+    ? [[-0.22,-0.28],[0.22,-0.28],[-0.26,0],[0.26,0],[-0.22,0.28],[0.22,0.28]]
+    : [[-0.15,-0.2],[0.15,-0.2],[-0.15,0.2],[0.15,0.2]];
   for(const off of legOffsets){
-    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.12,0.35,0.12), legMat);
-    leg.position.set(off[0],0.17,off[1]);
+    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.1,0.32,0.1), legMat);
+    leg.position.set(off[0],0.16,off[1]);
     group.add(leg);
   }
+  group.scale.setScalar(stats.scale||1);
   return group;
 }
 function spawnMob(kind,x,y,z){
   if(mobs.length>=MAX_MOBS) return null;
+  const stats = MOB_STATS[kind] || MOB_STATS.critter;
   const mesh = createMobMesh(kind);
   mesh.position.set(x,y,z);
   scene.add(mesh);
   const mob = {
     id:mobIdCounter++, kind, mesh,
     pos:new THREE.Vector3(x,y,z), vel:new THREE.Vector3(0,0,0),
-    health: kind==='critter'?6:10, maxHealth: kind==='critter'?6:10,
+    health: stats.health, maxHealth: stats.health,
     wanderTimer:0, attackTimer:0, hitFlash:0, dead:false,
   };
   mobs.push(mob);
@@ -2370,26 +2763,41 @@ function mobCollides(x,y,z){
 }
 function updateMobAI(m, dt){
   if(m.hitFlash>0) m.hitFlash -= dt;
-  if(m.kind==='critter'){
-    m.wanderTimer -= dt;
-    if(m.wanderTimer<=0){
-      m.wanderTimer = 2+Math.random()*3;
-      const ang=Math.random()*Math.PI*2;
-      m.vel.x = Math.random()<0.3?0:Math.cos(ang)*1.0;
-      m.vel.z = Math.random()<0.3?0:Math.sin(ang)*1.0;
+  const stats = MOB_STATS[m.kind] || MOB_STATS.critter;
+  if(stats.passive){
+    const speed = stats.speed||1.0;
+    let fled=false;
+    if(stats.flees){
+      const toPlayer = new THREE.Vector3(player.pos.x-m.pos.x, 0, player.pos.z-m.pos.z);
+      const dist = toPlayer.length();
+      if(dist<4 && dist>0.1){
+        toPlayer.normalize();
+        m.vel.x = -toPlayer.x*speed; m.vel.z = -toPlayer.z*speed;
+        m.wanderTimer = 0.3; // re-evaluate flee direction often while the player is close
+        fled = true;
+      }
+    }
+    if(!fled){
+      m.wanderTimer -= dt;
+      if(m.wanderTimer<=0){
+        m.wanderTimer = 2+Math.random()*3;
+        const ang=Math.random()*Math.PI*2;
+        m.vel.x = Math.random()<0.3?0:Math.cos(ang)*speed;
+        m.vel.z = Math.random()<0.3?0:Math.sin(ang)*speed;
+      }
     }
   } else {
     const toPlayer = new THREE.Vector3(player.pos.x-m.pos.x, 0, player.pos.z-m.pos.z);
     const dist = toPlayer.length();
     if(dist<8 && dist>0.1){
       toPlayer.normalize();
-      m.vel.x = toPlayer.x*1.8; m.vel.z = toPlayer.z*1.8;
+      m.vel.x = toPlayer.x*(stats.chaseSpeed||1.8); m.vel.z = toPlayer.z*(stats.chaseSpeed||1.8);
     } else {
       m.wanderTimer -= dt;
       if(m.wanderTimer<=0){
         m.wanderTimer = 2+Math.random()*3;
         const ang=Math.random()*Math.PI*2;
-        m.vel.x = Math.cos(ang)*0.8; m.vel.z = Math.sin(ang)*0.8;
+        m.vel.x = Math.cos(ang)*(stats.wanderSpeed||0.8); m.vel.z = Math.sin(ang)*(stats.wanderSpeed||0.8);
       }
     }
     m.attackTimer -= dt;
@@ -2419,11 +2827,16 @@ function updateMobAI(m, dt){
   m.mesh.position.copy(m.pos);
   if(m.vel.x*m.vel.x+m.vel.z*m.vel.z>0.01) m.mesh.rotation.y = Math.atan2(m.vel.x,m.vel.z);
   const bodyMat = m.mesh.children[0].material;
-  if(bodyMat) bodyMat.color.setHex(m.hitFlash>0 ? 0xff6666 : (m.kind==='critter'?0xd9b48a:0x3a4a3a));
+  if(bodyMat) bodyMat.color.setHex(m.hitFlash>0 ? 0xff6666 : stats.bodyColor);
 }
 function trySpawnMob(isNight){
-  const kind = isNight ? 'hostile' : 'critter';
-  if(isNight && Math.random()<0.55) return;
+  let kind;
+  if(isNight){
+    if(Math.random()<0.55) return;
+    kind = Math.random()<0.35 ? 'spider' : 'hostile';
+  } else {
+    kind = Math.random()<0.3 ? 'rabbit' : 'critter';
+  }
   for(let attempt=0; attempt<6; attempt++){
     const ang=Math.random()*Math.PI*2, dist=10+Math.random()*14;
     const x=Math.floor(player.pos.x+Math.cos(ang)*dist), z=Math.floor(player.pos.z+Math.sin(ang)*dist);
@@ -2493,10 +2906,177 @@ function attackMob(m){
   m.vel.x += (kx/klen)*3; m.vel.z += (kz/klen)*3; m.vel.y = 4;
   if(m.health<=0){
     m.dead = true;
-    if(m.kind==='critter') addItemToInventory(ITEMS_EXTRA.RAW_FOOD, 1+Math.floor(Math.random()*2));
-    else if(Math.random()<0.5) addItemToInventory(ITEMS_EXTRA.STICK,1);
+    // Loot pops out onto the ground at the mob's position instead of
+    // appearing directly in the hotbar - has to be walked over to collect.
+    const stats = MOB_STATS[m.kind] || MOB_STATS.critter;
+    if(stats.passive) spawnItemEntity(m.pos.x, m.pos.y+0.3, m.pos.z, ITEMS_EXTRA.RAW_FOOD, 1+Math.floor(Math.random()*2));
+    else if(Math.random()<0.5) spawnItemEntity(m.pos.x, m.pos.y+0.3, m.pos.z, ITEMS_EXTRA.STICK, 1);
+    playSound('hurt');
+  } else {
+    playSound('hit');
   }
 }
+//////////////////////////////////////////////////////////////
+// AUDIO - short sound effects and an ambient music pad, both synthesized
+// live with the Web Audio API (no external files can be fetched into a
+// self-contained HTML build). The AudioContext is created lazily on first
+// use rather than at load, since browsers require a user gesture before
+// audio is allowed to start - every playSound() call in this game already
+// originates from a click/keydown-driven action, so that requirement is
+// satisfied naturally during normal play.
+//////////////////////////////////////////////////////////////
+let audioCtx = null;
+function ensureAudio(){
+  if(audioCtx) return audioCtx;
+  try{ audioCtx = new (window.AudioContext||window.webkitAudioContext)(); }
+  catch(e){ return null; }
+  return audioCtx;
+}
+const SOUND_DEFS = {
+  break:  { freq:180, to:90,  type:'square',   dur:0.09, vol:0.11 },
+  place:  { freq:220, to:280, type:'square',   dur:0.08, vol:0.11 },
+  hit:    { freq:140, to:90,  type:'sawtooth', dur:0.08, vol:0.12 },
+  hurt:   { freq:110, to:60,  type:'sawtooth', dur:0.18, vol:0.14 },
+  pickup: { freq:520, to:780, type:'sine',     dur:0.09, vol:0.10 },
+  craft:  { freq:330, to:440, type:'triangle', dur:0.14, vol:0.12 },
+  door:   { freq:160, to:110, type:'square',   dur:0.16, vol:0.10 },
+  bed:    { freq:260, to:440, type:'sine',     dur:0.30, vol:0.10 },
+  jump:   { freq:300, to:380, type:'square',   dur:0.07, vol:0.08 },
+  damage: { freq:100, to:50,  type:'sawtooth', dur:0.15, vol:0.15 },
+};
+function playSound(name){
+  const ctx = ensureAudio();
+  if(!ctx) return;
+  if(ctx.state==='suspended') ctx.resume();
+  const def = SOUND_DEFS[name];
+  if(!def) return;
+  const now = ctx.currentTime;
+  const gain = ctx.createGain();
+  gain.connect(ctx.destination);
+  const osc = ctx.createOscillator();
+  osc.type = def.type;
+  osc.frequency.setValueAtTime(def.freq, now);
+  osc.frequency.exponentialRampToValueAtTime(Math.max(20,def.to), now+def.dur);
+  gain.gain.setValueAtTime(def.vol, now);
+  gain.gain.exponentialRampToValueAtTime(0.0001, now+def.dur);
+  osc.connect(gain);
+  osc.start(now);
+  osc.stop(now+def.dur+0.02);
+}
+// Ambient background music: a sparse, slow, generative pad rather than a
+// fixed loop (no audio file to loop) - an occasional soft note from a calm
+// scale, long attack/release so notes overlap gently instead of clicking.
+const MUSIC_SCALE = [220.00, 246.94, 261.63, 293.66, 329.63, 392.00, 440.00];
+let musicTimer = 3;
+function playAmbientNote(){
+  const ctx = ensureAudio();
+  // Never force-resume from here - only user-gesture-triggered sound
+  // effects should be allowed to lift the browser's autoplay suspension,
+  // so ambient music simply waits until the first real interaction.
+  if(!ctx || ctx.state==='suspended') return;
+  const now = ctx.currentTime;
+  const octave = Math.random()<0.5 ? 1 : 0.5;
+  const freq = MUSIC_SCALE[Math.floor(Math.random()*MUSIC_SCALE.length)]*octave;
+  const gain = ctx.createGain();
+  gain.connect(ctx.destination);
+  const osc = ctx.createOscillator();
+  osc.type = 'sine';
+  osc.frequency.value = freq;
+  osc.connect(gain);
+  const dur = 3.5+Math.random()*2.5;
+  gain.gain.setValueAtTime(0, now);
+  gain.gain.linearRampToValueAtTime(0.04, now+1.4);
+  gain.gain.linearRampToValueAtTime(0, now+dur);
+  osc.start(now);
+  osc.stop(now+dur+0.1);
+}
+function updateMusic(dt){
+  musicTimer -= dt;
+  if(musicTimer<=0){
+    musicTimer = 5+Math.random()*6;
+    playAmbientNote();
+  }
+}
+
+//////////////////////////////////////////////////////////////
+// GROUND ITEM ENTITIES - dropped blocks/loot are physical objects in the
+// world (not instant inventory adds); the player has to walk over them.
+//////////////////////////////////////////////////////////////
+const itemEntities = [];
+const ITEM_ENTITY_PICKUP_RADIUS = 1.15;
+const ITEM_ENTITY_PICKUP_DELAY = 0.4; // can't self-pickup the instant it pops out
+const ITEM_ENTITY_DESPAWN_SECONDS = 300; // 5 minutes, matches vanilla Minecraft
+function makeItemEntityMesh(itemId){
+  const cell = getItemIconCell(itemId);
+  const geo = new THREE.BoxGeometry(0.3,0.3,0.3);
+  if(cell){
+    // Remap the cube's default [0,1] UVs onto just this item's atlas cell so
+    // every face shows the item's icon, instead of the whole texture sheet.
+    const uv = geo.attributes.uv;
+    for(let i=0;i<uv.count;i++){
+      uv.setXY(i, cell.u0 + uv.getX(i)*(cell.u1-cell.u0), cell.v0 + uv.getY(i)*(cell.v1-cell.v0));
+    }
+    uv.needsUpdate = true;
+  }
+  const mat = new THREE.MeshLambertMaterial({ map:atlasTexture, transparent:true, alphaTest:0.05 });
+  return new THREE.Mesh(geo, mat);
+}
+function spawnItemEntity(x,y,z,id,count){
+  if(!scene || !count || count<=0 || id==null) return;
+  const mesh = makeItemEntityMesh(id);
+  mesh.position.set(x,y,z);
+  scene.add(mesh);
+  const ang = Math.random()*Math.PI*2, spd = 0.8+Math.random()*0.8;
+  itemEntities.push({
+    mesh, id, count,
+    pos:new THREE.Vector3(x,y,z),
+    vel:new THREE.Vector3(Math.cos(ang)*spd, 3.2+Math.random()*1.2, Math.sin(ang)*spd),
+    age:0, spin:(Math.random()-0.5)*2
+  });
+}
+function removeItemEntity(i){
+  const e = itemEntities[i];
+  scene.remove(e.mesh); e.mesh.geometry.dispose(); e.mesh.material.dispose();
+  itemEntities.splice(i,1);
+}
+function updateItemEntities(dt){
+  if(!itemEntities.length) return;
+  for(let i=itemEntities.length-1;i>=0;i--){
+    const e = itemEntities[i];
+    e.age += dt;
+    if(e.age>ITEM_ENTITY_DESPAWN_SECONDS){ removeItemEntity(i); continue; }
+    e.vel.y += GRAVITY*dt*0.55;
+    const drag = Math.min(1,dt*2.5);
+    e.vel.x *= (1-drag); e.vel.z *= (1-drag);
+    let nx=e.pos.x+e.vel.x*dt, ny=e.pos.y+e.vel.y*dt, nz=e.pos.z+e.vel.z*dt;
+    const floorId = World.get(Math.floor(e.pos.x), Math.floor(ny-0.14), Math.floor(e.pos.z));
+    const floorDef = BlockDef[floorId];
+    if(floorDef && floorDef.solid){
+      const floorTop = Math.floor(ny-0.14)+1+0.14;
+      if(ny < floorTop){ ny = floorTop; e.vel.y = 0; }
+    }
+    e.pos.set(nx,ny,nz);
+    e.mesh.position.set(nx, ny+Math.sin(e.age*4)*0.04, nz);
+    e.mesh.rotation.y += dt*(0.6+e.spin*1.5);
+
+    if(e.age>ITEM_ENTITY_PICKUP_DELAY && GameState.state==='playing'){
+      const dx=e.pos.x-player.pos.x, dy=e.pos.y-(player.pos.y+EYE_HEIGHT*0.5), dz=e.pos.z-player.pos.z;
+      if(dx*dx+dy*dy+dz*dz < ITEM_ENTITY_PICKUP_RADIUS*ITEM_ENTITY_PICKUP_RADIUS){
+        const left = addItemToInventory(e.id, e.count);
+        if(left<=0){
+          playSound('pickup');
+          removeItemEntity(i);
+          refreshHotbarUI();
+          continue;
+        } else if(left<e.count){
+          e.count = left;
+          refreshHotbarUI();
+        }
+      }
+    }
+  }
+}
+
 //////////////////////////////////////////////////////////////
 // DAY / NIGHT CYCLE
 //////////////////////////////////////////////////////////////
@@ -2516,8 +3096,13 @@ function updateDayNight(dt){
   const dayFactor = Math.max(0, sunHeight);
   const twilightFactor = Math.max(0, 1-Math.abs(sunHeight)*4);
 
-  sunLight.position.set(sunHoriz*100, Math.max(sunHeight,0.05)*100+10, 40);
-  sunLight.target.position.set(0,0,0);
+  // Positioned/aimed relative to the camera (not world origin) so its
+  // direction - and thus lighting/color - stays exactly as before while the
+  // shadow camera's frustum (fixed-size, set up in initScene) stays
+  // centered on the player instead of only ever covering blocks near (0,0,0).
+  const px=camera.position.x, py=camera.position.y, pz=camera.position.z;
+  sunLight.position.set(px+sunHoriz*100, py+Math.max(sunHeight,0.05)*100+10, pz+40);
+  sunLight.target.position.set(px,py,pz);
   sunLight.intensity = 0.15 + dayFactor*0.95;
   const warmth = twilightFactor*0.5;
   sunLight.color.setRGB(1, 0.95-warmth*0.25, 0.85-warmth*0.45);
@@ -2647,6 +3232,10 @@ function gameLoop(nowMs){
     updateMining(dt);
     updateSurvivalStats(dt);
     updateMobs(dt, isNightTime());
+    updateItemEntities(dt);
+    updateMusic(dt);
+    waterAnimAcc += dt;
+    if(waterAnimAcc>0.08){ animateWaterTexture(waterAnimAcc); waterAnimAcc=0; }
     maybeRefreshStatBars();
     ChunkManager.updateStreaming(player.pos.x, player.pos.z);
     ChunkManager.flushDirty();
