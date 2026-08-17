@@ -193,8 +193,7 @@
   .recipeBook{ margin-top:10px; max-height:110px; overflow-y:auto; border-top:2px solid #999; padding-top:8px;}
   .recipeRow{ font-size:11px; color:#444; display:flex; justify-content:space-between; padding:2px 0; }
 
-  #blocker{ position:fixed; inset:0; z-index:5; display:none; }
-  #blocker.active{ display:block; }
+  #deathScreen .content p{ color:#ddd; margin:0 0 20px 0; letter-spacing:1px; }
 
   ::-webkit-scrollbar{ width:8px; }
   ::-webkit-scrollbar-thumb{ background:#999; }
@@ -202,7 +201,6 @@
 </head>
 <body>
 <canvas id="gameCanvas"></canvas>
-<div id="blocker"></div>
 
 <!-- HUD -->
 <div id="hud">
@@ -261,6 +259,7 @@
   <div class="backdrop"></div>
   <div class="content">
     <h1>YOU DIED</h1>
+    <p id="deathCauseMsg">You died</p>
     <button class="pixel-btn" id="respawnDeathBtn">Respawn</button>
   </div>
 </div>
@@ -325,6 +324,21 @@
 <div id="tooltip"></div>
 
 <script>
+// The vendored Three.js build just below prints a one-time console.warn on
+// load recommending ES Modules over its classic global <script> build. This
+// file is intentionally a single self-contained HTML document with zero
+// runtime dependencies (no fetches, no imports), so ES Modules aren't a fit
+// here, and the notice doesn't reflect any actual problem - this vendored
+// revision's global build keeps working regardless of the warning. Filter
+// out just that one known string so it doesn't clutter the console; every
+// other console.warn (a real one, if it ever occurs) still prints normally.
+(function(){
+  var originalWarn = console.warn.bind(console);
+  console.warn = function(){
+    if(typeof arguments[0]==='string' && arguments[0].indexOf('Scripts "build/three.js" and "build/three.min.js" are deprecated')===0) return;
+    originalWarn.apply(console, arguments);
+  };
+})();
 console.warn('Scripts "build/three.js" and "build/three.min.js" are deprecated with r150+, and will be removed with r160. Please use ES Modules or alternatives: https://threejs.org/docs/index.html#manual/en/introduction/Installation'),
 /**
  * @license
@@ -436,8 +450,6 @@ BlockDef[BLOCKS.CRAFTING_TABLE] = { name:'Crafting Table', solid:true, opaque:tr
 BlockDef[BLOCKS.FURNACE] = { name:'Furnace', solid:true, opaque:true, hardness:2.0, tool:'pickaxe', tier:TOOL_TIER.WOOD,
   drop:BLOCKS.FURNACE, faces:{top:'furnace_top', bottom:'furnace_top', side:'furnace_side'}, interact:'furnace' };
 
-const PLACEABLE_BLOCKS = Object.keys(BlockDef).map(Number).sort((a,b)=>a-b);
-
 const ItemDef = {};
 for(const idStr in BlockDef){
   const id = Number(idStr);
@@ -514,7 +526,10 @@ const World = {
   inBounds(x,y,z){ return y>=0 && y<WORLD_HEIGHT; },
   get(x,y,z){
     if(y<0||y>=WORLD_HEIGHT) return BLOCKS.AIR;
-    x|=0; y|=0; z|=0;
+    // Math.floor (not `|0`/`|=0`) so fractional/negative world-space inputs
+    // resolve to the correct voxel - bitwise truncation rounds toward zero,
+    // which maps e.g. x=-0.5 to voxel 0 instead of the correct voxel -1.
+    x=Math.floor(x); y=Math.floor(y); z=Math.floor(z);
     const cx=Math.floor(x/CHUNK_SIZE), cz=Math.floor(z/CHUNK_SIZE);
     const c = getOrCreateChunkData(cx,cz);
     const lx=x-cx*CHUNK_SIZE, lz=z-cz*CHUNK_SIZE;
@@ -522,6 +537,7 @@ const World = {
   },
   setRaw(x,y,z,id){
     if(y<0||y>=WORLD_HEIGHT) return;
+    x=Math.floor(x); y=Math.floor(y); z=Math.floor(z);
     const cx=Math.floor(x/CHUNK_SIZE), cz=Math.floor(z/CHUNK_SIZE);
     const c = getOrCreateChunkData(cx,cz);
     const lx=x-cx*CHUNK_SIZE, lz=z-cz*CHUNK_SIZE;
@@ -530,10 +546,11 @@ const World = {
   set(x,y,z,id){
     if(y<0||y>=WORLD_HEIGHT) return false;
     this.setRaw(x,y,z,id);
-    ChunkManager.markDirtyAt(x,y,z);
+    ChunkManager.markDirtyAt(Math.floor(x),Math.floor(y),Math.floor(z));
     return true;
   },
   surfaceY(x,z){
+    x=Math.floor(x); z=Math.floor(z);
     const cx=Math.floor(x/CHUNK_SIZE), cz=Math.floor(z/CHUNK_SIZE);
     const c = getOrCreateChunkData(cx,cz);
     const lx=x-cx*CHUNK_SIZE, lz=z-cz*CHUNK_SIZE;
@@ -542,9 +559,17 @@ const World = {
   spawnPoint: {x:0.5, y:WORLD_HEIGHT, z:0.5}
 };
 function computeSpawnPoint(){
-  const h = computeTerrainHeight(0,0);
-  World.spawnPoint.x = 0.5; World.spawnPoint.z = 0.5;
-  World.spawnPoint.y = h+2;
+  const sx=0, sz=0;
+  // Force the spawn chunk's decoration (tree placement) to run now, before
+  // we pick a spawn Y, so a tree at/near (0,0) can't leave the spawn point
+  // buried in leaves/logs - decorating is idempotent (guarded by
+  // chunk.decorated) so this doesn't double-plant anything later.
+  maybeDecorateChunk(Math.floor(sx/CHUNK_SIZE), Math.floor(sz/CHUNK_SIZE));
+  let y = computeTerrainHeight(sx,sz)+2;
+  const yMax = WORLD_HEIGHT-2;
+  while(y<yMax && (World.get(sx,y,sz)!==BLOCKS.AIR || World.get(sx,y+1,sz)!==BLOCKS.AIR)) y++;
+  World.spawnPoint.x = sx+0.5; World.spawnPoint.z = sz+0.5;
+  World.spawnPoint.y = y;
 }
 
 // Deterministic, order-independent tree placement: a column is a tree
@@ -559,7 +584,18 @@ function isTreeOrigin(x,z){
   for(let dz=-2; dz<=2; dz++){
     for(let dx=-2; dx<=2; dx++){
       if(dx===0 && dz===0) continue;
-      if(treeHashScore(x+dx,z+dz) > score) return false;
+      const otherScore = treeHashScore(x+dx,z+dz);
+      if(otherScore > score) return false;
+      // treeHashScore is quantized to 1,000,003 discrete buckets (see
+      // hash2), so across an "infinite" explored world exact-score ties
+      // between two different columns are not just theoretical - they will
+      // happen. Without a deterministic tiebreak, two tied neighbors could
+      // each see the other as "not greater" and both plant, overlapping
+      // canopies. Break ties by canonical (z,x) order so exactly one wins.
+      if(otherScore === score){
+        const neighborIsEarlier = (dz<0) || (dz===0 && dx<0);
+        if(neighborIsEarlier) return false;
+      }
     }
   }
   return true;
@@ -581,6 +617,13 @@ function plantTreeAt(x,baseY,z){
     }
   }
 }
+// Tracks tree origins that have ALREADY been planted, globally (not per
+// chunk). A tree within `pad` of a chunk seam gets rediscovered by every
+// neighboring chunk's own padded scan - without this, each of those chunks
+// would unconditionally replant it, silently regrowing anything the player
+// had mined there. Chunk.decorated only dedupes a given *chunk's* scan
+// running twice; this set dedupes a given *tree* being planted twice.
+const plantedTreeOrigins = new Set();
 // Decorates one chunk's worth of ground with trees, scanning a padded
 // border so canopies/trunks that straddle a chunk seam still get placed
 // correctly regardless of which chunk loads first.
@@ -593,6 +636,9 @@ function maybeDecorateChunk(cx,cz){
   for(let z=bz0-pad; z<bz0+CHUNK_SIZE+pad; z++){
     for(let x=bx0-pad; x<bx0+CHUNK_SIZE+pad; x++){
       if(!isTreeOrigin(x,z)) continue;
+      const originKey = x+','+z;
+      if(plantedTreeOrigins.has(originKey)) continue;
+      plantedTreeOrigins.add(originKey);
       const height = computeTerrainHeight(x,z);
       if(height<5) continue;
       plantTreeAt(x,height,z);
@@ -612,8 +658,16 @@ const actx = atlasCanvas.getContext('2d');
 actx.imageSmoothingEnabled = false;
 
 let __nextCell = 0;
+const ATLAS_CAPACITY = ATLAS_COLS*ATLAS_ROWS;
 const AtlasUV = {};
 function allocCell(name){
+  if(__nextCell >= ATLAS_CAPACITY){
+    // Past here, `row` would exceed ATLAS_ROWS-1 and silently produce
+    // negative/out-of-range UVs (corrupted or blank textures) instead of a
+    // visible error - fail loudly instead so a future added block/item
+    // texture can't corrupt the atlas without anyone noticing.
+    throw new Error('Texture atlas capacity exceeded: '+(__nextCell+1)+' cells requested, only '+ATLAS_CAPACITY+' available (ATLAS_COLS x ATLAS_ROWS). Increase ATLAS_ROWS.');
+  }
   const col = __nextCell % ATLAS_COLS, row = Math.floor(__nextCell/ATLAS_COLS);
   __nextCell++;
   const p = {px:col*CELL_PX, py:row*CELL_PX};
@@ -934,7 +988,13 @@ const FACE_SHADE = { py:1.0, ny:0.55, px:0.78, nx:0.78, pz:0.78, nz:0.78 };
 function faceVisible(curId, neighId){
   if(neighId===BLOCKS.AIR) return true;
   if(blockRenderLayer(neighId)==='opaque') return false;
-  if(neighId===curId) return false;
+  // Neighbor is non-opaque (glass/water/leaves). An opaque block's face
+  // must still render here (you see solid surfaces through glass/water/
+  // leaves) - but if THIS block is also non-opaque, suppress the shared
+  // face regardless of whether the two are the same specific block type:
+  // two translucent surfaces sandwiched at the same plane just z-fight /
+  // double-blend, with nothing solid behind either of them either way.
+  if(blockRenderLayer(curId)!=='opaque') return false;
   return true;
 }
 
@@ -955,8 +1015,9 @@ function buildChunkMesh(chunkX, chunkZ){
         const buf = buffers[layer];
         for(let di=0; di<DIRS.length; di++){
           const D = DIRS[di];
-          const ny_ = y+D.dy;
-          const neigh = (ny_<0||ny_>=WORLD_HEIGHT) ? BLOCKS.AIR : World.get(x+D.dx,ny_,z+D.dz);
+          // World.get() already clamps out-of-range y to AIR internally, so
+          // no need to duplicate that bounds check here.
+          const neigh = World.get(x+D.dx, y+D.dy, z+D.dz);
           if(!faceVisible(id, neigh)) continue;
           const fd = FACE_DEFS[D.d];
           const uvRect = resolveBlockFaceUV(id, D.d);
@@ -985,7 +1046,6 @@ const ChunkManager = {
   pendingLoad: [],      // ring-ordered queue of {cx,cz} waiting to be loaded, closest first
   pendingLoadSet: new Set(),
   key(cx,cz){ return cx+','+cz; },
-  chunkCoordOf(x,z){ return [Math.floor(x/CHUNK_SIZE), Math.floor(z/CHUNK_SIZE)]; },
   markDirtyAt(x,y,z){
     const cx = Math.floor(x/CHUNK_SIZE), cz = Math.floor(z/CHUNK_SIZE);
     this.dirty.add(this.key(cx,cz));
@@ -1012,12 +1072,11 @@ const ChunkManager = {
   ensureLoaded(cx,cz){
     const key = this.key(cx,cz);
     if(this.loaded.has(key)) return;
+    // (Neighbor chunk data does NOT need pre-touching here: World.get()
+    // already calls getOrCreateChunkData() internally, so buildChunkMesh's
+    // boundary-face queries into neighboring chunks generate that data on
+    // demand regardless. Explicitly pre-touching it was pure overhead.)
     maybeDecorateChunk(cx,cz);
-    // Pre-touch the 4 neighbors' data (not meshes) so this chunk's boundary
-    // faces are culled against real terrain instead of assumed-air, which
-    // would otherwise pop/disappear a frame later once the neighbor loads.
-    getOrCreateChunkData(cx-1,cz); getOrCreateChunkData(cx+1,cz);
-    getOrCreateChunkData(cx,cz-1); getOrCreateChunkData(cx,cz+1);
     this.loaded.add(key);
     this.rebuildChunk(cx,cz);
   },
@@ -1036,6 +1095,13 @@ const ChunkManager = {
   rebuildChunk(cx,cz){
     const key = this.key(cx,cz);
     if(!this.loaded.has(key)) return;
+    // This rebuild makes the mesh match current data, so it's no longer
+    // dirty - clear it here (not just in flushDirty) so a chunk that gets
+    // rebuilt via ensureLoaded() right after being marked dirty (e.g. a
+    // boundary edit landed on a not-yet-loaded neighbor which then streams
+    // in before the next flushDirty pass) doesn't get wastefully rebuilt a
+    // second time once flushDirty later finds the same key still queued.
+    this.dirty.delete(key);
     const buffers = buildChunkMesh(cx,cz);
     let entry = this.meshes[key];
     if(!entry){ entry = {opaque:null,cutout:null,glass:null}; this.meshes[key]=entry; }
@@ -1204,7 +1270,7 @@ const player = {
   mode:'creative',
   health:20, maxHealth:20,
   hunger:20, maxHunger:20,
-  hungerAcc:0, regenAcc:0, hostileHitAcc:0,
+  hungerAcc:0, regenAcc:0,
   dead:false,
   selectedHotbar:0,
   hotbar: makeEmptySlots(9),
@@ -1272,6 +1338,23 @@ function setupSurvivalInventory(){
   player.inventory = makeEmptySlots(18);
 }
 
+// Switching modes mid-game (pause menu "Switch to X") must not destroy
+// whatever the player is carrying. Each mode's hotbar/inventory is stashed
+// when leaving it and restored when returning, so a survival player who
+// tabs into creative and back gets their mined items back exactly as left;
+// a mode with no stash yet (first time this game) gets a fresh kit.
+let creativeInvStash = null, survivalInvStash = null;
+function resetModeStashes(){ creativeInvStash = null; survivalInvStash = null; }
+function switchPlayerMode(newMode){
+  const leaving = { hotbar: player.hotbar, inventory: player.inventory };
+  if(player.mode==='creative') creativeInvStash = leaving; else survivalInvStash = leaving;
+  player.mode = newMode;
+  const incoming = newMode==='creative' ? creativeInvStash : survivalInvStash;
+  if(incoming){ player.hotbar = incoming.hotbar; player.inventory = incoming.inventory; }
+  else if(newMode==='creative'){ setupCreativeInventory(); }
+  else { setupSurvivalInventory(); }
+}
+
 function respawnPlayer(){
   player.pos.set(World.spawnPoint.x, World.spawnPoint.y, World.spawnPoint.z);
   player.vel.set(0,0,0);
@@ -1285,7 +1368,7 @@ function respawnPlayer(){
 //////////////////////////////////////////////////////////////
 // INPUT
 //////////////////////////////////////////////////////////////
-const Input = { keys:{}, leftDown:false, rightDown:false };
+const Input = { keys:{}, leftDown:false };
 const DIGIT_CODES = ['Digit1','Digit2','Digit3','Digit4','Digit5','Digit6','Digit7','Digit8','Digit9'];
 
 function isPointerLocked(){ return document.pointerLockElement === canvasEl; }
@@ -1394,9 +1477,16 @@ function raycastVoxel(origin, dir, maxDist){
     const id = World.get(x,y,z);
     if(id!==BLOCKS.AIR) return {x,y,z,px:prevX,py:prevY,pz:prevZ};
     prevX=x; prevY=y; prevZ=z;
-    if(tMaxX<tMaxY && tMaxX<tMaxZ){ x+=stepX; t=tMaxX; tMaxX+=tDeltaX; }
-    else if(tMaxY<tMaxZ){ y+=stepY; t=tMaxY; tMaxY+=tDeltaY; }
-    else { z+=stepZ; t=tMaxZ; tMaxZ+=tDeltaZ; }
+    // Step every axis tied for the smallest tMax this iteration, not just
+    // one. Stepping only one axis on an exact tie (most commonly hit when
+    // the ray origin sits exactly on an integer grid boundary, or when
+    // travelling along a perfect diagonal) lets the ray "corner-clip"
+    // through the shared edge/vertex of the voxel grid without the other
+    // tied axis ever registering its crossing.
+    t = Math.min(tMaxX, tMaxY, tMaxZ);
+    if(tMaxX===t){ x+=stepX; tMaxX+=tDeltaX; }
+    if(tMaxY===t){ y+=stepY; tMaxY+=tDeltaY; }
+    if(tMaxZ===t){ z+=stepZ; tMaxZ+=tDeltaZ; }
     if(t>maxDist) return null;
   }
   return null;
@@ -1445,7 +1535,6 @@ function tryBreakBlockCreative(){
   const {x,y,z} = currentTarget;
   const id = World.get(x,y,z);
   if(id===BLOCKS.AIR) return;
-  closeAllPanelsFor(x,y,z);
   World.set(x,y,z,BLOCKS.AIR);
   breakProgress=0; breakTargetKey=null;
 }
@@ -1453,6 +1542,11 @@ function tryBreakBlockCreative(){
 function updateMining(dt){
   if(player.mode!=='survival'){ hideBreakBar(); return; }
   if(!Input.leftDown || !currentTarget || GameState.state!=='playing'){ breakProgress=0; breakTargetKey=null; hideBreakBar(); return; }
+  // A targetable mob takes priority over mining, same as a fresh mousedown
+  // would attack it instead of breaking a block. Without this, holding the
+  // mouse button to mine could keep chewing through breakProgress on a block
+  // while a mob stood in the crosshair, silently ignoring it.
+  if(findTargetedMob()){ breakProgress=0; breakTargetKey=null; hideBreakBar(); return; }
   const key = currentTarget.x+','+currentTarget.y+','+currentTarget.z;
   if(key!==breakTargetKey){ breakTargetKey=key; breakProgress=0; }
   const id = World.get(currentTarget.x,currentTarget.y,currentTarget.z);
@@ -1465,7 +1559,6 @@ function updateMining(dt){
     const def = BlockDef[id];
     const {x,y,z} = currentTarget;
     if(def.drop!=null) addItemToInventory(def.drop,1);
-    closeAllPanelsFor(x,y,z);
     World.set(x,y,z,BLOCKS.AIR);
     breakProgress=0; breakTargetKey=null;
     hideBreakBar();
@@ -1608,7 +1701,7 @@ function matchRecipe(stacks,w,h){
     if(r.minGrid && (w<r.minGrid||h<r.minGrid)) continue;
     if(distinctIds.length!==r.inputs.length) continue;
     let ok=true;
-    for(const inp of r.inputs){ if((counts[inp.item]||0)!==inp.count){ ok=false; break; } }
+    for(const inp of r.inputs){ if((counts[inp.item]||0)<inp.count){ ok=false; break; } }
     if(ok) return r;
   }
   const norm = normalizeGrid(stacks,w,h);
@@ -1655,7 +1748,7 @@ function furnaceKey(x,y,z){ return x+','+y+','+z; }
 function getFurnaceState(x,y,z){
   const k = furnaceKey(x,y,z);
   let st = furnaceStates.get(k);
-  if(!st){ st={input:null,fuel:null,output:null,burnTimeLeft:0,burnTimeTotal:0,cookProgress:0}; furnaceStates.set(k,st); }
+  if(!st){ st={input:null,fuel:null,output:null,burnTimeLeft:0,burnTimeTotal:0,cookProgress:0,cookingFor:null}; furnaceStates.set(k,st); }
   return st;
 }
 function updateAllFurnaces(dt){
@@ -1665,24 +1758,32 @@ function updateAllFurnaces(dt){
 function updateFurnace(st,dt){
   const recipe = st.input ? SMELT_RECIPES.find(r=>r.input===st.input.id) : null;
   const canStart = !!recipe && (!st.output || (st.output.id===recipe.output && st.output.count<itemStackSize(recipe.output)));
+  // Only clear partial progress if it belongs to a DIFFERENT item than
+  // what's in the input slot now - pulling the same item out and back in
+  // (or the output slot being briefly full) should pause, not erase it.
+  if(recipe && st.cookingFor!=null && st.cookingFor!==recipe.output) st.cookProgress=0;
+  if(!recipe) st.cookingFor=null;
   if(st.burnTimeLeft<=0 && canStart && st.fuel && FUEL_ITEMS[st.fuel.id]){
     const fuelVal = FUEL_ITEMS[st.fuel.id];
     st.burnTimeTotal = fuelVal*3;
     st.burnTimeLeft = st.burnTimeTotal;
     st.fuel.count--; if(st.fuel.count<=0) st.fuel=null;
   }
-  if(st.burnTimeLeft>0){
+  // Fuel only burns down (and progress only advances) while there's an
+  // actual smelt to apply it to - otherwise both just pause in place
+  // instead of wasting lit fuel and erasing progress for nothing.
+  if(st.burnTimeLeft>0 && canStart){
     st.burnTimeLeft -= dt;
-    if(canStart){
-      st.cookProgress += dt;
-      if(st.cookProgress>=recipe.time){
-        st.cookProgress=0;
-        st.input.count--; if(st.input.count<=0) st.input=null;
-        if(!st.output) st.output={id:recipe.output,count:1,durability:null};
-        else st.output.count++;
-      }
-    } else { st.cookProgress=0; }
-  } else { st.cookProgress=0; }
+    st.cookingFor = recipe.output;
+    st.cookProgress += dt;
+    if(st.cookProgress>=recipe.time){
+      st.cookProgress=0;
+      st.cookingFor=null;
+      st.input.count--; if(st.input.count<=0) st.input=null;
+      if(!st.output) st.output={id:recipe.output,count:1,durability:null};
+      else st.output.count++;
+    }
+  }
 }
 
 //////////////////////////////////////////////////////////////
@@ -1694,8 +1795,13 @@ let uiCursorStack = null;
 let lastMouseX=0, lastMouseY=0;
 const heldCursorEl = document.getElementById('heldCursor');
 const tooltipEl = document.getElementById('tooltip');
+const PANEL_STATES = {inventory:true, crafting:true, furnace:true};
 function updateHeldCursorVisual(mx,my){
-  if(uiCursorStack){
+  // Only ever show the floating held-item icon while an actual panel is
+  // open. If closeAllPanels() had to keep a leftover stack on the cursor
+  // (inventory was full) it stays tracked internally but shouldn't render
+  // as a stuck icon over normal first-person gameplay.
+  if(uiCursorStack && PANEL_STATES[GameState.state]){
     heldCursorEl.style.display='block';
     heldCursorEl.style.left=mx+'px'; heldCursorEl.style.top=my+'px';
     drawItemIcon(heldCursorEl.querySelector('canvas'), uiCursorStack.id);
@@ -1748,23 +1854,89 @@ function onSlotClick(accessor, refreshFn){
     if(cur){ uiCursorStack=cur; accessor.set(null); }
   } else {
     if(!cur){ accessor.set(uiCursorStack); uiCursorStack=null; }
-    else if(cur.id===uiCursorStack.id){
+    else if(cur.id===uiCursorStack.id && itemStackSize(cur.id)>1){
       const max=itemStackSize(cur.id); const space=max-cur.count; const move=Math.min(space,uiCursorStack.count);
       cur.count+=move; uiCursorStack.count-=move;
       if(uiCursorStack.count<=0) uiCursorStack=null;
     } else {
+      // Either a different item, or the same unstackable item (e.g. two
+      // tools sharing an id but each with independent durability) - swap
+      // rather than attempting a zero-space "merge" that used to no-op.
       accessor.set(uiCursorStack); uiCursorStack=cur;
     }
   }
   updateHeldCursorVisual(lastMouseX,lastMouseY);
   refreshFn();
 }
-function buildSlotsInto(containerEl, count, getAccessor, onChangeRefresh){
+// Right-click: pick up half a stack (rounded up), or place a single item at
+// a time - vanilla Minecraft's split/place-one gesture. Without this there
+// was no way to divide one stack across two different grid cells, which
+// makes every SHAPED recipe (sticks, pickaxes, swords - anything needing
+// the same item in more than one cell) impossible to arrange, even though
+// matchRecipe() itself matches correctly once the grid is set up right.
+function onSlotRightClick(accessor, refreshFn){
+  const cur = accessor.get();
+  if(!uiCursorStack){
+    if(cur){
+      const take = Math.ceil(cur.count/2);
+      const remain = cur.count-take;
+      uiCursorStack = {id:cur.id, count:take, durability:cur.durability};
+      accessor.set(remain>0 ? {id:cur.id, count:remain, durability:cur.durability} : null);
+    }
+  } else if(!cur){
+    const rest = uiCursorStack.count-1;
+    accessor.set({id:uiCursorStack.id, count:1, durability:uiCursorStack.durability});
+    uiCursorStack = rest>0 ? {id:uiCursorStack.id, count:rest, durability:uiCursorStack.durability} : null;
+  } else if(cur.id===uiCursorStack.id && cur.count<itemStackSize(cur.id)){
+    cur.count += 1; uiCursorStack.count -= 1;
+    if(uiCursorStack.count<=0) uiCursorStack=null;
+  }
+  // Different item, a full stack, or an unstackable same-id item (e.g. two
+  // tools): right-click placement no-ops here too, matching vanilla (only
+  // a left-click swaps those).
+  updateHeldCursorVisual(lastMouseX,lastMouseY);
+  refreshFn();
+}
+// Shift+click: send a whole stack to "the other" storage region in one
+// step - hotbar<->main inventory, or crafting/furnace slots straight back
+// to the general inventory - instead of a manual pick-up/place round trip.
+function moveStackToInventory(accessor, refreshFn){
+  const cur = accessor.get();
+  if(!cur) return;
+  const left = addItemToInventory(cur.id, cur.count);
+  accessor.set(left>0 ? {id:cur.id, count:left, durability:cur.durability} : null);
+  refreshFn();
+}
+function moveStackAcross(accessor, targetArr, refreshFn){
+  const cur = accessor.get();
+  if(!cur) return;
+  const maxStack = itemStackSize(cur.id);
+  let remaining = cur.count;
+  for(let i=0;i<targetArr.length && remaining>0;i++){
+    const s = targetArr[i];
+    if(s && s.id===cur.id && s.count<maxStack){ const add=Math.min(maxStack-s.count,remaining); s.count+=add; remaining-=add; }
+  }
+  for(let i=0;i<targetArr.length && remaining>0;i++){
+    if(!targetArr[i]){ const add=Math.min(maxStack,remaining); targetArr[i]={id:cur.id,count:add,durability:cur.durability}; remaining-=add; }
+  }
+  accessor.set(remaining>0 ? {id:cur.id,count:remaining,durability:cur.durability} : null);
+  refreshFn();
+}
+function onSlotShiftClick(accessor, region, refreshFn){
+  if(region==='hotbar') moveStackAcross(accessor, player.inventory, refreshFn);
+  else if(region==='storage') moveStackAcross(accessor, player.hotbar, refreshFn);
+  else moveStackToInventory(accessor, refreshFn); // crafting grid / furnace slots
+}
+function buildSlotsInto(containerEl, count, getAccessor, onChangeRefresh, region){
   containerEl.innerHTML='';
   const els=[];
   for(let i=0;i<count;i++){
     const el = createSlotEl();
-    el.addEventListener('click', ()=>onSlotClick(getAccessor(i), onChangeRefresh));
+    el.addEventListener('click', (e)=>{
+      if(e.shiftKey) onSlotShiftClick(getAccessor(i), region, onChangeRefresh);
+      else onSlotClick(getAccessor(i), onChangeRefresh);
+    });
+    el.addEventListener('contextmenu', (e)=>{ e.preventDefault(); onSlotRightClick(getAccessor(i), onChangeRefresh); });
     el.addEventListener('mouseenter', ()=>showTooltipFor(el, getAccessor(i).get()));
     el.addEventListener('mouseleave', hideTooltip);
     containerEl.appendChild(el);
@@ -1782,6 +1954,27 @@ function collectCraftOutput(gridArr, w, h, refreshFn){
   consumeRecipeFromGrid(gridArr, r);
   if(uiCursorStack) uiCursorStack.count += r.output.count;
   else uiCursorStack = {id:r.output.item, count:r.output.count, durability:itemDurabilityMax(r.output.item)};
+  updateHeldCursorVisual(lastMouseX,lastMouseY);
+  refreshFn();
+}
+// Shift+click on a crafting result: craft it and send it straight to the
+// inventory in one step, matching vanilla's shift-click-to-collect.
+function shiftCollectCraftOutput(gridArr, w, h, refreshFn){
+  const r = matchRecipe(gridArr,w,h);
+  if(!r) return;
+  consumeRecipeFromGrid(gridArr, r);
+  const left = addItemToInventory(r.output.item, r.output.count);
+  if(left>0){
+    // Couldn't fit all of it - keep the remainder on the cursor (merging in
+    // if compatible) rather than silently discarding it.
+    if(uiCursorStack && uiCursorStack.id===r.output.item && uiCursorStack.count+left<=itemStackSize(r.output.item)){
+      uiCursorStack.count += left;
+    } else if(!uiCursorStack){
+      uiCursorStack = {id:r.output.item, count:left, durability:itemDurabilityMax(r.output.item)};
+    } else {
+      showToast('Inventory full - some of the crafted item was lost');
+    }
+  }
   updateHeldCursorVisual(lastMouseX,lastMouseY);
   refreshFn();
 }
@@ -1822,13 +2015,17 @@ function openInventory(){
   const craftGridEl=document.getElementById('invCraftGrid');
   const outputGridEl=document.getElementById('invCraftOutput');
   invRefs = {
-    hotbar: buildSlotsInto(hotbarGridEl,9,i=>arraySlotAccessor(player.hotbar,i), refreshInventoryPanel),
-    storage: buildSlotsInto(storageGridEl,18,i=>arraySlotAccessor(player.inventory,i), refreshInventoryPanel),
-    craft: buildSlotsInto(craftGridEl,4,i=>arraySlotAccessor(craftGrid2,i), refreshInventoryPanel),
+    hotbar: buildSlotsInto(hotbarGridEl,9,i=>arraySlotAccessor(player.hotbar,i), refreshInventoryPanel, 'hotbar'),
+    storage: buildSlotsInto(storageGridEl,18,i=>arraySlotAccessor(player.inventory,i), refreshInventoryPanel, 'storage'),
+    craft: buildSlotsInto(craftGridEl,4,i=>arraySlotAccessor(craftGrid2,i), refreshInventoryPanel, 'craft'),
   };
   outputGridEl.innerHTML='';
   const outEl = createSlotEl();
-  outEl.addEventListener('click', ()=>collectCraftOutput(craftGrid2,2,2,refreshInventoryPanel));
+  outEl.addEventListener('click', (e)=>{
+    if(e.shiftKey) shiftCollectCraftOutput(craftGrid2,2,2,refreshInventoryPanel);
+    else collectCraftOutput(craftGrid2,2,2,refreshInventoryPanel);
+  });
+  outEl.addEventListener('contextmenu', (e)=>{ e.preventDefault(); collectCraftOutput(craftGrid2,2,2,refreshInventoryPanel); });
   outEl.addEventListener('mouseenter', ()=>{ const r=matchRecipe(craftGrid2,2,2); showTooltipFor(outEl, r?{id:r.output.item,count:r.output.count}:null); });
   outEl.addEventListener('mouseleave', hideTooltip);
   outputGridEl.appendChild(outEl);
@@ -1853,19 +2050,28 @@ function openInteract(kind,x,y,z){
 function openCraftingTablePanel(){
   GameState.state='crafting';
   if(isPointerLocked()) document.exitPointerLock();
-  craftGrid3 = makeEmptySlots(9);
+  // NOTE: deliberately not resetting craftGrid3 here. closeAllPanels()
+  // already empties every slot it can return to the inventory; any slot
+  // still populated at this point is genuinely stranded (inventory was
+  // full when the last table closed) and resetting unconditionally would
+  // silently destroy it. Same shared-grid caveat as before: this table
+  // state is global, not per-table-block, matching the rest of the file.
   const hotbarGridEl=document.getElementById('tableMainGrid');
   const storageGridEl=document.getElementById('tableStorageGrid');
   const craftGridEl=document.getElementById('tableCraftGrid');
   const outputGridEl=document.getElementById('tableCraftOutput');
   tableRefs = {
-    hotbar: buildSlotsInto(hotbarGridEl,9,i=>arraySlotAccessor(player.hotbar,i), refreshTablePanel),
-    storage: buildSlotsInto(storageGridEl,18,i=>arraySlotAccessor(player.inventory,i), refreshTablePanel),
-    craft: buildSlotsInto(craftGridEl,9,i=>arraySlotAccessor(craftGrid3,i), refreshTablePanel),
+    hotbar: buildSlotsInto(hotbarGridEl,9,i=>arraySlotAccessor(player.hotbar,i), refreshTablePanel, 'hotbar'),
+    storage: buildSlotsInto(storageGridEl,18,i=>arraySlotAccessor(player.inventory,i), refreshTablePanel, 'storage'),
+    craft: buildSlotsInto(craftGridEl,9,i=>arraySlotAccessor(craftGrid3,i), refreshTablePanel, 'craft'),
   };
   outputGridEl.innerHTML='';
   const outEl=createSlotEl();
-  outEl.addEventListener('click', ()=>collectCraftOutput(craftGrid3,3,3,refreshTablePanel));
+  outEl.addEventListener('click', (e)=>{
+    if(e.shiftKey) shiftCollectCraftOutput(craftGrid3,3,3,refreshTablePanel);
+    else collectCraftOutput(craftGrid3,3,3,refreshTablePanel);
+  });
+  outEl.addEventListener('contextmenu', (e)=>{ e.preventDefault(); collectCraftOutput(craftGrid3,3,3,refreshTablePanel); });
   outEl.addEventListener('mouseenter', ()=>{ const r=matchRecipe(craftGrid3,3,3); showTooltipFor(outEl, r?{id:r.output.item,count:r.output.count}:null); });
   outEl.addEventListener('mouseleave', hideTooltip);
   outputGridEl.appendChild(outEl);
@@ -1894,23 +2100,31 @@ function openFurnacePanel(x,y,z){
   const fuelEl=document.getElementById('furnaceFuelSlot');
   const outputEl=document.getElementById('furnaceOutputSlot');
   furnaceRefs = {
-    hotbar: buildSlotsInto(hotbarGridEl,9,i=>arraySlotAccessor(player.hotbar,i), refreshFurnacePanel),
-    storage: buildSlotsInto(storageGridEl,18,i=>arraySlotAccessor(player.inventory,i), refreshFurnacePanel),
+    hotbar: buildSlotsInto(hotbarGridEl,9,i=>arraySlotAccessor(player.hotbar,i), refreshFurnacePanel, 'hotbar'),
+    storage: buildSlotsInto(storageGridEl,18,i=>arraySlotAccessor(player.inventory,i), refreshFurnacePanel, 'storage'),
   };
   inputEl.innerHTML=''; fuelEl.innerHTML=''; outputEl.innerHTML='';
+  const inAccessor = {get:()=>st.input,set:v=>{st.input=v;}};
   const inEl=createSlotEl();
-  inEl.addEventListener('click', ()=>onSlotClick({get:()=>st.input,set:v=>{st.input=v;}}, refreshFurnacePanel));
+  inEl.addEventListener('click', (e)=>{
+    if(e.shiftKey) onSlotShiftClick(inAccessor, 'furnace', refreshFurnacePanel);
+    else onSlotClick(inAccessor, refreshFurnacePanel);
+  });
+  inEl.addEventListener('contextmenu', (e)=>{ e.preventDefault(); onSlotRightClick(inAccessor, refreshFurnacePanel); });
   inEl.addEventListener('mouseenter', ()=>showTooltipFor(inEl, st.input));
   inEl.addEventListener('mouseleave', hideTooltip);
-  const fuEl=document.createElement('div'); // placeholder replaced below
   inputEl.appendChild(inEl);
+  const fuelAccessor = {get:()=>st.fuel,set:v=>{st.fuel=v;}};
   const fuelSlotEl=createSlotEl();
-  fuelSlotEl.addEventListener('click', ()=>onSlotClick({get:()=>st.fuel,set:v=>{st.fuel=v;}}, refreshFurnacePanel));
+  fuelSlotEl.addEventListener('click', (e)=>{
+    if(e.shiftKey) onSlotShiftClick(fuelAccessor, 'furnace', refreshFurnacePanel);
+    else onSlotClick(fuelAccessor, refreshFurnacePanel);
+  });
+  fuelSlotEl.addEventListener('contextmenu', (e)=>{ e.preventDefault(); onSlotRightClick(fuelAccessor, refreshFurnacePanel); });
   fuelSlotEl.addEventListener('mouseenter', ()=>showTooltipFor(fuelSlotEl, st.fuel));
   fuelSlotEl.addEventListener('mouseleave', hideTooltip);
   fuelEl.appendChild(fuelSlotEl);
-  const outEl=createSlotEl();
-  outEl.addEventListener('click', ()=>{
+  function takeFurnaceOutput(){
     if(st.output){
       if(!uiCursorStack){ uiCursorStack=st.output; st.output=null; }
       else if(uiCursorStack.id===st.output.id){
@@ -1920,7 +2134,19 @@ function openFurnacePanel(x,y,z){
       updateHeldCursorVisual(lastMouseX,lastMouseY);
       refreshFurnacePanel();
     }
+  }
+  function shiftTakeFurnaceOutput(){
+    if(!st.output) return;
+    const left = addItemToInventory(st.output.id, st.output.count);
+    st.output = left>0 ? {id:st.output.id, count:left, durability:st.output.durability} : null;
+    refreshFurnacePanel();
+  }
+  const outEl=createSlotEl();
+  outEl.addEventListener('click', (e)=>{
+    if(e.shiftKey) shiftTakeFurnaceOutput();
+    else takeFurnaceOutput();
   });
+  outEl.addEventListener('contextmenu', (e)=>{ e.preventDefault(); takeFurnaceOutput(); });
   outEl.addEventListener('mouseenter', ()=>showTooltipFor(outEl, st.output));
   outEl.addEventListener('mouseleave', hideTooltip);
   outputEl.appendChild(outEl);
@@ -1948,7 +2174,19 @@ function closeAllPanels(){
       if(arr[i]){ const left=addItemToInventory(arr[i].id,arr[i].count); arr[i]= left>0?{id:arr[i].id,count:left,durability:arr[i].durability}:null; }
     }
   }
-  if(uiCursorStack){ addItemToInventory(uiCursorStack.id, uiCursorStack.count); uiCursorStack=null; updateHeldCursorVisual(lastMouseX,lastMouseY); }
+  if(uiCursorStack){
+    const left = addItemToInventory(uiCursorStack.id, uiCursorStack.count);
+    if(left>0){
+      // Inventory truly full - keep whatever didn't fit on the cursor
+      // rather than deleting it. It'll reappear (and stay hidden from
+      // gameplay view) the next time any panel is opened.
+      uiCursorStack = {id:uiCursorStack.id, count:left, durability:uiCursorStack.durability};
+      showToast('Inventory full - held item kept for next time you open a panel');
+    } else {
+      uiCursorStack=null;
+    }
+    updateHeldCursorVisual(lastMouseX,lastMouseY);
+  }
   document.getElementById('inventoryOverlay').classList.remove('active');
   document.getElementById('craftingTableOverlay').classList.remove('active');
   document.getElementById('furnaceOverlay').classList.remove('active');
@@ -1957,9 +2195,6 @@ function closeAllPanels(){
   GameState.state='playing';
   refreshHotbarUI();
   if(wasMenuState) canvasEl.requestPointerLock();
-}
-function closeAllPanelsFor(x,y,z){
-  if(furnaceOpenPos && furnaceOpenPos.x===x && furnaceOpenPos.y===y && furnaceOpenPos.z===z) closeAllPanels();
 }
 document.getElementById('closeInventoryBtn').addEventListener('click', closeAllPanels);
 document.getElementById('closeCraftingBtn').addEventListener('click', closeAllPanels);
@@ -2014,11 +2249,14 @@ function damagePlayer(amount, source){
   flashDamageVignette();
   if(player.health<=0) killPlayer(source);
 }
-function killPlayer(){
+function killPlayer(cause){
   player.dead = true;
   GameState.state = 'dead';
   Input.leftDown=false;
   if(isPointerLocked()) document.exitPointerLock();
+  const CAUSE_MESSAGES = { fall:'You fell to your death', void:'You fell out of the world', starve:'You starved to death', mob:'You were slain' };
+  const causeEl = document.getElementById('deathCauseMsg');
+  if(causeEl) causeEl.textContent = CAUSE_MESSAGES[cause] || 'You died';
   document.getElementById('deathScreen').classList.add('active');
 }
 function updateSurvivalStats(dt){
@@ -2156,8 +2394,16 @@ function updateMobAI(m, dt){
     }
     m.attackTimer -= dt;
     if(dist<1.15 && player.mode==='survival' && !player.dead && m.attackTimer<=0){
-      m.attackTimer = 1.0;
-      damagePlayer(2,'mob');
+      // Line-of-sight: a solid block between the mob and player (e.g. a
+      // thin wall met exactly at a corner) should block the melee hit,
+      // same as it blocks the player's own attacks on mobs.
+      const eyeM = new THREE.Vector3(m.pos.x, m.pos.y+0.4, m.pos.z);
+      const toP = new THREE.Vector3(player.pos.x-eyeM.x, (player.pos.y+EYE_HEIGHT*0.6)-eyeM.y, player.pos.z-eyeM.z);
+      const d3 = toP.length();
+      if(d3>0.0001 && !raycastVoxel(eyeM, toP.clone().normalize(), Math.max(0,d3-0.1))){
+        m.attackTimer = 1.0;
+        damagePlayer(2,'mob');
+      }
     }
   }
   m.vel.y += GRAVITY*dt;
@@ -2181,11 +2427,17 @@ function trySpawnMob(isNight){
   for(let attempt=0; attempt<6; attempt++){
     const ang=Math.random()*Math.PI*2, dist=10+Math.random()*14;
     const x=Math.floor(player.pos.x+Math.cos(ang)*dist), z=Math.floor(player.pos.z+Math.sin(ang)*dist);
-    const y=World.surfaceY(x,z)+1;
+    // surfaceY(x,z) is the first AIR cell above the terrain (the mob's feet
+    // level); the actual ground block to check is one below that.
+    const y=World.surfaceY(x,z);
     if(y<1||y>WORLD_HEIGHT-2) continue;
     const groundId=World.get(x,y-1,z);
     if(groundId===BLOCKS.AIR) continue;
     if(!isNight && groundId!==BLOCKS.GRASS) continue;
+    // Ground can be a tree-trunk column even though it reads as solid
+    // "ground" - make sure the mob's own 2-block-tall body is actually
+    // clear (not embedded in a trunk/canopy) before spawning.
+    if(World.get(x,y,z)!==BLOCKS.AIR || World.get(x,y+1,z)!==BLOCKS.AIR) continue;
     spawnMob(kind, x+0.5, y, z+0.5);
     return;
   }
@@ -2209,13 +2461,20 @@ function findTargetedMob(){
   for(const m of mobs){
     const toMob = new THREE.Vector3(m.pos.x-camera.position.x, (m.pos.y+0.4)-camera.position.y, m.pos.z-camera.position.z);
     const dist = toMob.length();
-    if(dist>REACH_DISTANCE) continue;
-    toMob.normalize();
-    if(toMob.dot(dir)>0.92 && dist<bestDist){ best=m; bestDist=dist; }
+    if(dist>REACH_DISTANCE || dist<0.0001 || dist>=bestDist) continue;
+    const dirToMob = toMob.clone().normalize();
+    if(dirToMob.dot(dir)<=0.92) continue;
+    // Line-of-sight: a solid block between the camera and the mob should
+    // block targeting it, same as it would block actually walking there.
+    if(raycastVoxel(camera.position, dirToMob, Math.max(0,dist-0.1))) continue;
+    best=m; bestDist=dist;
   }
   return best;
 }
 function attackMob(m){
+  // Guard against a same-frame double-hit (e.g. mousedown re-firing before the
+  // mob is spliced out of the mobs array) awarding duplicate loot/knockback.
+  if(m.dead) return;
   const heldSlot = player.hotbar[player.selectedHotbar];
   const heldDef = heldSlot ? ItemDef[heldSlot.id] : null;
   let dmg=1;
@@ -2310,6 +2569,7 @@ function selectStartMode(mode){
 document.getElementById('startPlayBtn').addEventListener('click', ()=>startNewGame(selectedStartMode));
 
 function startNewGame(mode){
+  resetModeStashes(); // fresh game - don't resurrect a previous session's stashed inventory
   player.mode = mode;
   player.pos.set(World.spawnPoint.x, World.spawnPoint.y, World.spawnPoint.z);
   player.vel.set(0,0,0);
@@ -2344,9 +2604,10 @@ function resumeGame(){
 }
 document.getElementById('resumeBtn').addEventListener('click', resumeGame);
 document.getElementById('switchModeBtn').addEventListener('click', ()=>{
-  player.mode = player.mode==='creative' ? 'survival' : 'creative';
-  if(player.mode==='creative'){ setupCreativeInventory(); player.dead=false; hideDeathScreen(); }
-  else { setupSurvivalInventory(); player.health=player.maxHealth; player.hunger=player.maxHunger; }
+  const newMode = player.mode==='creative' ? 'survival' : 'creative';
+  switchPlayerMode(newMode);
+  if(player.mode==='creative'){ player.dead=false; hideDeathScreen(); }
+  else { player.health=player.maxHealth; player.hunger=player.maxHunger; }
   document.getElementById('modeTag').textContent = player.mode.toUpperCase();
   document.getElementById('switchModeBtn').textContent = 'Switch to '+(player.mode==='creative'?'Survival':'Creative');
   refreshHotbarUI(); refreshStatBars();
