@@ -158,6 +158,7 @@
   #inventoryOverlay .content{ width:460px; }
   #invMainGrid{ grid-template-columns: repeat(9, 46px); margin-bottom:14px; }
   #invStorageGrid{ grid-template-columns: repeat(9, 46px); margin-bottom:14px; }
+  #invArmorGrid{ grid-template-columns: repeat(4, 46px); margin-bottom:14px; }
   #invCraftRow{ display:flex; align-items:center; gap:14px; margin-bottom:6px; justify-content:flex-end; }
   #invCraftGrid{ grid-template-columns: repeat(2, 46px); }
   #invCraftArrow{ font-size:22px; color:#333; }
@@ -269,6 +270,8 @@
   <div class="backdrop"></div>
   <div class="content pixel-panel gridPanel">
     <button class="pixel-btn" id="closeInventoryBtn">X</button>
+    <div class="panelTitle">ARMOR</div>
+    <div class="slotsGrid" id="invArmorGrid"></div>
     <div class="panelTitle">CRAFTING</div>
     <div id="invCraftRow">
       <div class="slotsGrid" id="invCraftGrid"></div>
@@ -409,8 +412,13 @@ const SEA_LEVEL = 20;
 const RENDER_DISTANCE_CHUNKS = 5;   // radius, in chunks, that stays loaded/meshed around the player
 const CHUNK_UNLOAD_MARGIN = 2;      // extra chunks of hysteresis before unloading, avoids load/unload thrashing
 const CHUNKS_LOADED_PER_FRAME = 2;  // streaming budget so new terrain never stutters the frame
-const TOOL_TIER = { HAND:0, WOOD:1, STONE:2, IRON:3 };
-const TOOL_TIER_NAME = ['Hand','Wood','Stone','Iron'];
+// GOLD/DIAMOND/TUNGSTEN are appended after IRON rather than inserted into
+// the existing 0-3 sequence, so none of the existing tier comparisons
+// (mining gates, speed curves) need renumbering. Bronze deliberately reuses
+// TOOL_TIER.IRON itself (see its ItemDef entries below) rather than adding
+// a numbered tier of its own - it's a same-power side-grade, not a new gate.
+const TOOL_TIER = { HAND:0, WOOD:1, STONE:2, IRON:3, GOLD:4, DIAMOND:5, TUNGSTEN:6 };
+const TOOL_TIER_NAME = ['Hand','Wood','Stone','Iron','Gold','Diamond','Tungsten'];
 
 //////////////////////////////////////////////////////////////
 // BLOCK / ITEM IDS
@@ -418,21 +426,38 @@ const TOOL_TIER_NAME = ['Hand','Wood','Stone','Iron'];
 const BLOCKS = {
   AIR:0, GRASS:1, DIRT:2, STONE:3, SAND:4, WATER:5, LOG:6, LEAVES:7,
   PLANKS:8, COAL_ORE:9, IRON_ORE:10, GLASS:11, CRAFTING_TABLE:12, FURNACE:13,
-  COBBLESTONE:25, BRICKS:26, BEDROCK:27, DOOR:28, BED:29, DOOR_OPEN:30
+  COBBLESTONE:25, BRICKS:26, BEDROCK:27, DOOR:28, BED:29, DOOR_OPEN:30,
+  GOLD_ORE:36, BRONZE_ORE:37, DIAMOND_ORE:38, EMERALD_ORE:39, RUBY_ORE:40, TUNGSTEN_ORE:41,
+  FARMLAND:71, WHEAT_0:72, WHEAT_1:73, WHEAT_2:74, WHEAT_3:75, BOAT:82
 };
 const ITEMS_EXTRA = {
   STICK:14, COAL:15, IRON_INGOT:16,
   PICK_WOOD:17, PICK_STONE:18, PICK_IRON:19,
   SWORD_WOOD:20, SWORD_STONE:21, SWORD_IRON:22,
-  RAW_FOOD:23, COOKED_FOOD:24
+  RAW_FOOD:23, COOKED_FOOD:24,
+  BUCKET:31, WATER_BUCKET:32,
+  AXE_WOOD:33, AXE_STONE:34, AXE_IRON:35,
+  GOLD_INGOT:42, BRONZE_INGOT:43, TUNGSTEN_INGOT:44,
+  DIAMOND:45, EMERALD:46, RUBY:47,
+  PICK_GOLD:48, SWORD_GOLD:49, AXE_GOLD:50,
+  PICK_DIAMOND:51, SWORD_DIAMOND:52, AXE_DIAMOND:53,
+  PICK_TUNGSTEN:54, SWORD_TUNGSTEN:55, AXE_TUNGSTEN:56,
+  PICK_BRONZE:57, SWORD_BRONZE:58, AXE_BRONZE:59,
+  IRON_HELMET:60, IRON_CHESTPLATE:61, IRON_LEGGINGS:62, IRON_BOOTS:63,
+  DIAMOND_HELMET:64, DIAMOND_CHESTPLATE:65, DIAMOND_LEGGINGS:66, DIAMOND_BOOTS:67,
+  FEATHER:68, BOW:69, ARROW:70,
+  HOE_WOOD:76, HOE_STONE:77, HOE_IRON:78, WHEAT_SEEDS:79, WHEAT:80, BREAD:81
 };
 
 //////////////////////////////////////////////////////////////
 // BLOCK DEFINITIONS (texture keys resolved to atlas UVs later)
 //////////////////////////////////////////////////////////////
 const BlockDef = {};
+// dropExtra (same shape as MOB_STATS.lootExtra): a chance at a bonus Wheat
+// Seed from grass, since there's no separate tall-grass decoration block in
+// this engine to be the "usual" vanilla seed source.
 BlockDef[BLOCKS.GRASS] = { name:'Grass Block', solid:true, opaque:true, hardness:0.5, tool:null, tier:0,
-  drop:BLOCKS.DIRT, faces:{top:'grass_top', side:'grass_side', bottom:'dirt'} };
+  drop:BLOCKS.DIRT, dropExtra:{item:ITEMS_EXTRA.WHEAT_SEEDS, min:0, max:1}, faces:{top:'grass_top', side:'grass_side', bottom:'dirt'} };
 BlockDef[BLOCKS.DIRT] = { name:'Dirt', solid:true, opaque:true, hardness:0.5, tool:null, tier:0,
   drop:BLOCKS.DIRT, faces:{all:'dirt'} };
 BlockDef[BLOCKS.STONE] = { name:'Stone', solid:true, opaque:true, hardness:1.4, tool:'pickaxe', tier:TOOL_TIER.WOOD,
@@ -441,16 +466,35 @@ BlockDef[BLOCKS.SAND] = { name:'Sand', solid:true, opaque:true, hardness:0.5, to
   drop:BLOCKS.SAND, faces:{all:'sand'} };
 BlockDef[BLOCKS.WATER] = { name:'Water', solid:true, opaque:false, hardness:9999, tool:null, tier:0,
   drop:null, faces:{all:'water'} };
-BlockDef[BLOCKS.LOG] = { name:'Wood Log', solid:true, opaque:true, hardness:1.0, tool:null, tier:0,
+// axeBonus: unlike pickaxe/tier gating (tool:'pickaxe'), wood is always
+// breakable bare-handed - an axe just speeds it up, so this is read
+// separately in miningSecondsFor rather than reusing the tool/tier gate.
+BlockDef[BLOCKS.LOG] = { name:'Wood Log', solid:true, opaque:true, hardness:1.0, tool:null, tier:0, axeBonus:true,
   drop:BLOCKS.LOG, faces:{top:'log_top', bottom:'log_top', side:'log_side'} };
 BlockDef[BLOCKS.LEAVES] = { name:'Leaves', solid:true, opaque:false, hardness:0.2, tool:null, tier:0,
   drop:null, faces:{all:'leaves'} };
-BlockDef[BLOCKS.PLANKS] = { name:'Planks', solid:true, opaque:true, hardness:1.0, tool:null, tier:0,
+BlockDef[BLOCKS.PLANKS] = { name:'Planks', solid:true, opaque:true, hardness:1.0, tool:null, tier:0, axeBonus:true,
   drop:BLOCKS.PLANKS, faces:{all:'planks'} };
 BlockDef[BLOCKS.COAL_ORE] = { name:'Coal Ore', solid:true, opaque:true, hardness:1.6, tool:'pickaxe', tier:TOOL_TIER.WOOD,
   drop:ITEMS_EXTRA.COAL, faces:{all:'coal_ore'} };
 BlockDef[BLOCKS.IRON_ORE] = { name:'Iron Ore', solid:true, opaque:true, hardness:2.2, tool:'pickaxe', tier:TOOL_TIER.STONE,
   drop:BLOCKS.IRON_ORE, faces:{all:'iron_ore'} };
+// Six new mineable materials (rarity/depth of my own choosing, see the
+// ordered checks in generateChunkData). Metals smelt into an ingot like
+// iron; the three gems (diamond/emerald/ruby) drop directly when mined,
+// same as coal, since they don't need refining.
+BlockDef[BLOCKS.BRONZE_ORE] = { name:'Bronze Ore', solid:true, opaque:true, hardness:1.8, tool:'pickaxe', tier:TOOL_TIER.WOOD,
+  drop:BLOCKS.BRONZE_ORE, faces:{all:'bronze_ore'} };
+BlockDef[BLOCKS.RUBY_ORE] = { name:'Ruby Ore', solid:true, opaque:true, hardness:2.4, tool:'pickaxe', tier:TOOL_TIER.STONE,
+  drop:ITEMS_EXTRA.RUBY, faces:{all:'ruby_ore'} };
+BlockDef[BLOCKS.GOLD_ORE] = { name:'Gold Ore', solid:true, opaque:true, hardness:2.6, tool:'pickaxe', tier:TOOL_TIER.IRON,
+  drop:BLOCKS.GOLD_ORE, faces:{all:'gold_ore'} };
+BlockDef[BLOCKS.EMERALD_ORE] = { name:'Emerald Ore', solid:true, opaque:true, hardness:2.8, tool:'pickaxe', tier:TOOL_TIER.IRON,
+  drop:ITEMS_EXTRA.EMERALD, faces:{all:'emerald_ore'} };
+BlockDef[BLOCKS.DIAMOND_ORE] = { name:'Diamond Ore', solid:true, opaque:true, hardness:3.0, tool:'pickaxe', tier:TOOL_TIER.IRON,
+  drop:ITEMS_EXTRA.DIAMOND, faces:{all:'diamond_ore'} };
+BlockDef[BLOCKS.TUNGSTEN_ORE] = { name:'Tungsten Ore', solid:true, opaque:true, hardness:4.0, tool:'pickaxe', tier:TOOL_TIER.DIAMOND,
+  drop:BLOCKS.TUNGSTEN_ORE, faces:{all:'tungsten_ore'} };
 BlockDef[BLOCKS.GLASS] = { name:'Glass', solid:true, opaque:false, hardness:0.4, tool:null, tier:0,
   drop:BLOCKS.GLASS, faces:{all:'glass'} };
 BlockDef[BLOCKS.CRAFTING_TABLE] = { name:'Crafting Table', solid:true, opaque:true, hardness:1.2, tool:null, tier:0,
@@ -481,6 +525,36 @@ BlockDef[BLOCKS.DOOR_OPEN] = { name:'Door', solid:true, opaque:false, hardness:0
 // multiplayer sleep-sync/respawn-anchor mechanics).
 BlockDef[BLOCKS.BED] = { name:'Bed', solid:true, opaque:true, hardness:0.6, tool:null, tier:0,
   drop:BLOCKS.BED, faces:{top:'bed_top', bottom:'planks', side:'bed_side'}, interact:'bed' };
+// Farming: a Hoe tills Grass/Dirt into Farmland (see tryUseItem), which
+// grows planted Wheat Seeds through 4 stages over time (cropStates /
+// updateAllCrops below). Simplified from vanilla: no moisture/hydration
+// tracking - tilled farmland never dries out or reverts on its own.
+BlockDef[BLOCKS.FARMLAND] = { name:'Farmland', solid:true, opaque:true, hardness:0.6, tool:null, tier:0,
+  drop:BLOCKS.DIRT, faces:{top:'farmland_top', side:'farmland_side', bottom:'dirt'} };
+// Wheat crop, 4 growth-stage blocks (see CROP_STAGE_BLOCKS). Rendered as a
+// full cutout cube rather than a thin cross-sprite - this engine only builds
+// full-cube chunk meshes, same simplification Leaves already uses - and
+// stays solid for the same reason no other block gets a "walk-through"
+// exemption (see the collision code; nothing in this engine has solid:false
+// yet). Breaking an immature stage only returns the seed, matching vanilla;
+// only the mature stage yields actual Wheat, plus a chance of bonus seeds
+// via dropExtra (same mechanism as MOB_STATS.lootExtra).
+BlockDef[BLOCKS.WHEAT_0] = { name:'Wheat Crop', solid:true, opaque:false, hardness:0, tool:null, tier:0,
+  drop:ITEMS_EXTRA.WHEAT_SEEDS, faces:{all:'wheat_stage0'} };
+BlockDef[BLOCKS.WHEAT_1] = { name:'Wheat Crop', solid:true, opaque:false, hardness:0, tool:null, tier:0,
+  drop:ITEMS_EXTRA.WHEAT_SEEDS, faces:{all:'wheat_stage1'} };
+BlockDef[BLOCKS.WHEAT_2] = { name:'Wheat Crop', solid:true, opaque:false, hardness:0, tool:null, tier:0,
+  drop:ITEMS_EXTRA.WHEAT_SEEDS, faces:{all:'wheat_stage2'} };
+BlockDef[BLOCKS.WHEAT_3] = { name:'Wheat Crop', solid:true, opaque:false, hardness:0, tool:null, tier:0,
+  drop:ITEMS_EXTRA.WHEAT, dropExtra:{item:ITEMS_EXTRA.WHEAT_SEEDS, min:0, max:2}, faces:{all:'wheat_stage3'} };
+// Boat: craftable with the exact vanilla 5-plank recipe (see RECIPES) and
+// placeable only on top of Water (see the BOAT gate in tryPlaceOrInteract).
+// Simplified from vanilla: this is a real, breakable/collectible block
+// (like a docked boat), not a rideable/steerable entity - this engine has no
+// swimming or vehicle-riding physics for a boat to actually sail with, so
+// implementing full rowing/steering was out of scope here.
+BlockDef[BLOCKS.BOAT] = { name:'Boat', solid:true, opaque:false, hardness:0.6, tool:null, tier:0,
+  drop:BLOCKS.BOAT, faces:{all:'boat'} };
 
 const ItemDef = {};
 for(const idStr in BlockDef){
@@ -496,8 +570,69 @@ ItemDef[ITEMS_EXTRA.PICK_IRON] = { name:'Iron Pickaxe', stack:1, icon:'pick_iron
 ItemDef[ITEMS_EXTRA.SWORD_WOOD] = { name:'Wood Sword', stack:1, icon:'sword_wood', tool:{type:'sword',tier:TOOL_TIER.WOOD}, damage:3, durability:60 };
 ItemDef[ITEMS_EXTRA.SWORD_STONE] = { name:'Stone Sword', stack:1, icon:'sword_stone', tool:{type:'sword',tier:TOOL_TIER.STONE}, damage:4, durability:130 };
 ItemDef[ITEMS_EXTRA.SWORD_IRON] = { name:'Iron Sword', stack:1, icon:'sword_iron', tool:{type:'sword',tier:TOOL_TIER.IRON}, damage:6, durability:250 };
+ItemDef[ITEMS_EXTRA.AXE_WOOD] = { name:'Wood Axe', stack:1, icon:'axe_wood', tool:{type:'axe',tier:TOOL_TIER.WOOD}, damage:4, durability:60 };
+ItemDef[ITEMS_EXTRA.AXE_STONE] = { name:'Stone Axe', stack:1, icon:'axe_stone', tool:{type:'axe',tier:TOOL_TIER.STONE}, damage:5, durability:130 };
+ItemDef[ITEMS_EXTRA.AXE_IRON] = { name:'Iron Axe', stack:1, icon:'axe_iron', tool:{type:'axe',tier:TOOL_TIER.IRON}, damage:7, durability:250 };
 ItemDef[ITEMS_EXTRA.RAW_FOOD] = { name:'Raw Meat', stack:16, icon:'raw_food', food:3 };
 ItemDef[ITEMS_EXTRA.COOKED_FOOD] = { name:'Cooked Meat', stack:16, icon:'cooked_food', food:7 };
+// Water Bucket deliberately doesn't stack (stack:1) - matches vanilla, and
+// keeps the fill/empty round-trip below simple (always exactly 1 at a time).
+ItemDef[ITEMS_EXTRA.BUCKET] = { name:'Bucket', stack:16, icon:'bucket' };
+ItemDef[ITEMS_EXTRA.WATER_BUCKET] = { name:'Water Bucket', stack:1, icon:'water_bucket' };
+// Six new materials. Metals refine into an ingot (smelted, see
+// SMELT_RECIPES); the three gems are used exactly as mined, same as coal.
+ItemDef[ITEMS_EXTRA.GOLD_INGOT] = { name:'Gold Ingot', stack:64, icon:'gold_ingot' };
+ItemDef[ITEMS_EXTRA.BRONZE_INGOT] = { name:'Bronze Ingot', stack:64, icon:'bronze_ingot' };
+ItemDef[ITEMS_EXTRA.TUNGSTEN_INGOT] = { name:'Tungsten Ingot', stack:64, icon:'tungsten_ingot' };
+ItemDef[ITEMS_EXTRA.DIAMOND] = { name:'Diamond', stack:64, icon:'gem_diamond' };
+ItemDef[ITEMS_EXTRA.EMERALD] = { name:'Emerald', stack:64, icon:'gem_emerald' };
+ItemDef[ITEMS_EXTRA.RUBY] = { name:'Ruby', stack:64, icon:'gem_ruby' };
+// Bronze intentionally reuses TOOL_TIER.IRON - a same-power side-grade
+// rather than its own numbered gate (see the TOOL_TIER comment above).
+ItemDef[ITEMS_EXTRA.PICK_BRONZE] = { name:'Bronze Pickaxe', stack:1, icon:'pick_bronze', tool:{type:'pickaxe',tier:TOOL_TIER.IRON}, durability:250 };
+ItemDef[ITEMS_EXTRA.SWORD_BRONZE] = { name:'Bronze Sword', stack:1, icon:'sword_bronze', tool:{type:'sword',tier:TOOL_TIER.IRON}, damage:6, durability:250 };
+ItemDef[ITEMS_EXTRA.AXE_BRONZE] = { name:'Bronze Axe', stack:1, icon:'axe_bronze', tool:{type:'axe',tier:TOOL_TIER.IRON}, damage:7, durability:250 };
+// Gold: fast (tier alone speeds up mining via the existing 1/(1+tier*1.4)
+// curve) but fragile - low durability, matching vanilla's gold tools.
+ItemDef[ITEMS_EXTRA.PICK_GOLD] = { name:'Gold Pickaxe', stack:1, icon:'pick_gold', tool:{type:'pickaxe',tier:TOOL_TIER.GOLD}, durability:33 };
+ItemDef[ITEMS_EXTRA.SWORD_GOLD] = { name:'Gold Sword', stack:1, icon:'sword_gold', tool:{type:'sword',tier:TOOL_TIER.GOLD}, damage:5, durability:33 };
+ItemDef[ITEMS_EXTRA.AXE_GOLD] = { name:'Gold Axe', stack:1, icon:'axe_gold', tool:{type:'axe',tier:TOOL_TIER.GOLD}, damage:6, durability:33 };
+ItemDef[ITEMS_EXTRA.PICK_DIAMOND] = { name:'Diamond Pickaxe', stack:1, icon:'pick_diamond', tool:{type:'pickaxe',tier:TOOL_TIER.DIAMOND}, durability:500 };
+ItemDef[ITEMS_EXTRA.SWORD_DIAMOND] = { name:'Diamond Sword', stack:1, icon:'sword_diamond', tool:{type:'sword',tier:TOOL_TIER.DIAMOND}, damage:8, durability:500 };
+ItemDef[ITEMS_EXTRA.AXE_DIAMOND] = { name:'Diamond Axe', stack:1, icon:'axe_diamond', tool:{type:'axe',tier:TOOL_TIER.DIAMOND}, damage:9, durability:500 };
+// Tungsten: the new top tier, above diamond - toughest and hardest-hitting.
+ItemDef[ITEMS_EXTRA.PICK_TUNGSTEN] = { name:'Tungsten Pickaxe', stack:1, icon:'pick_tungsten', tool:{type:'pickaxe',tier:TOOL_TIER.TUNGSTEN}, durability:700 };
+ItemDef[ITEMS_EXTRA.SWORD_TUNGSTEN] = { name:'Tungsten Sword', stack:1, icon:'sword_tungsten', tool:{type:'sword',tier:TOOL_TIER.TUNGSTEN}, damage:9, durability:700 };
+ItemDef[ITEMS_EXTRA.AXE_TUNGSTEN] = { name:'Tungsten Axe', stack:1, icon:'axe_tungsten', tool:{type:'axe',tier:TOOL_TIER.TUNGSTEN}, damage:10, durability:700 };
+// Armor: two tiers (iron/diamond) rather than one per material - a stated
+// simplification, same spirit as bronze reusing iron's tool tier above.
+// `armor.slot` names the intended equip slot; the 4 equip slots in the
+// inventory panel don't currently enforce it (see armorSlotAccessor), so
+// this is read only by armorDefenseTotal() when summing worn defense.
+ItemDef[ITEMS_EXTRA.IRON_HELMET] = { name:'Iron Helmet', stack:1, icon:'iron_helmet', armor:{slot:'head', defense:2} };
+ItemDef[ITEMS_EXTRA.IRON_CHESTPLATE] = { name:'Iron Chestplate', stack:1, icon:'iron_chestplate', armor:{slot:'chest', defense:6} };
+ItemDef[ITEMS_EXTRA.IRON_LEGGINGS] = { name:'Iron Leggings', stack:1, icon:'iron_leggings', armor:{slot:'legs', defense:5} };
+ItemDef[ITEMS_EXTRA.IRON_BOOTS] = { name:'Iron Boots', stack:1, icon:'iron_boots', armor:{slot:'feet', defense:2} };
+ItemDef[ITEMS_EXTRA.DIAMOND_HELMET] = { name:'Diamond Helmet', stack:1, icon:'diamond_helmet', armor:{slot:'head', defense:3} };
+ItemDef[ITEMS_EXTRA.DIAMOND_CHESTPLATE] = { name:'Diamond Chestplate', stack:1, icon:'diamond_chestplate', armor:{slot:'chest', defense:8} };
+ItemDef[ITEMS_EXTRA.DIAMOND_LEGGINGS] = { name:'Diamond Leggings', stack:1, icon:'diamond_leggings', armor:{slot:'legs', defense:6} };
+ItemDef[ITEMS_EXTRA.DIAMOND_BOOTS] = { name:'Diamond Boots', stack:1, icon:'diamond_boots', armor:{slot:'feet', defense:3} };
+ItemDef[ITEMS_EXTRA.FEATHER] = { name:'Feather', stack:64, icon:'feather' };
+// isBow marks this as a no-target-required ranged weapon so
+// tryPlaceOrInteract knows to fire it even with nothing in reach - see the
+// currentTarget-optional restructuring below.
+ItemDef[ITEMS_EXTRA.BOW] = { name:'Bow', stack:1, icon:'bow', isBow:true, durability:200 };
+ItemDef[ITEMS_EXTRA.ARROW] = { name:'Arrow', stack:64, icon:'arrow' };
+// Farming tools/items. Hoes aren't weapons (no `damage` field, unlike axes)
+// - the user only asked for farming, not a hoe-as-weapon flourish.
+ItemDef[ITEMS_EXTRA.HOE_WOOD] = { name:'Wood Hoe', stack:1, icon:'hoe_wood', tool:{type:'hoe',tier:TOOL_TIER.WOOD}, durability:60 };
+ItemDef[ITEMS_EXTRA.HOE_STONE] = { name:'Stone Hoe', stack:1, icon:'hoe_stone', tool:{type:'hoe',tier:TOOL_TIER.STONE}, durability:130 };
+ItemDef[ITEMS_EXTRA.HOE_IRON] = { name:'Iron Hoe', stack:1, icon:'hoe_iron', tool:{type:'hoe',tier:TOOL_TIER.IRON}, durability:250 };
+ItemDef[ITEMS_EXTRA.WHEAT_SEEDS] = { name:'Wheat Seeds', stack:64, icon:'wheat_seeds' };
+// Wheat itself isn't edible (matches vanilla - only Bread is); it's purely a
+// farming/crafting ingredient.
+ItemDef[ITEMS_EXTRA.WHEAT] = { name:'Wheat', stack:64, icon:'wheat' };
+ItemDef[ITEMS_EXTRA.BREAD] = { name:'Bread', stack:16, icon:'bread', food:6 };
 
 function itemName(id){ return (ItemDef[id]&&ItemDef[id].name) || '?'; }
 function itemStackSize(id){ return (ItemDef[id]&&ItemDef[id].stack) || 64; }
@@ -540,8 +675,19 @@ function generateChunkData(cx,cz){
         } else if(y < height-3){
           id = BLOCKS.STONE;
           const r = hash3(x,y,z);
-          if(y<9 && r<0.014) id = BLOCKS.IRON_ORE;
+          // Ordered rarest/deepest-first so each else-if only "sees" the
+          // r-band earlier (rarer) checks at this y didn't already claim.
+          // Tungsten and diamond require a diamond/iron-tier pickaxe just
+          // to mine at all (BlockDef.tier, checked in miningSecondsFor) -
+          // this y/r gating only controls where they generate.
+          if(y<6 && r<0.005) id = BLOCKS.TUNGSTEN_ORE;
+          else if(y<9 && r<0.014) id = BLOCKS.IRON_ORE;
+          else if(y<10 && r<0.018) id = BLOCKS.DIAMOND_ORE;
+          else if(y<16 && r<0.026) id = BLOCKS.GOLD_ORE;
+          else if(y<18 && r<0.032) id = BLOCKS.EMERALD_ORE;
+          else if(y<24 && r<0.038) id = BLOCKS.RUBY_ORE;
           else if(r<0.045) id = BLOCKS.COAL_ORE;
+          else if(r<0.060) id = BLOCKS.BRONZE_ORE;
         } else if(y < height-1){
           id = beach ? BLOCKS.SAND : BLOCKS.DIRT;
         } else if(y < height){
@@ -690,7 +836,11 @@ function maybeDecorateChunk(cx,cz){
 // art (16x16 cells). Nothing here is copied from any existing
 // game's assets.
 //////////////////////////////////////////////////////////////
-const ATLAS_COLS = 8, ATLAS_ROWS = 7, CELL_PX = 32;
+// ATLAS_ROWS was raised from 7 to 11 (then 13) to make room for this
+// round's additions (buckets, axes, six new ores/materials and their tool
+// tiers, armor, bow and arrows, farming, boats) well ahead of allocCell()'s
+// capacity guard.
+const ATLAS_COLS = 8, ATLAS_ROWS = 13, CELL_PX = 32;
 // Scale factor relative to the original 16px-per-cell pixel-art baseline.
 // Hand-placed icon coordinates below (tools, hearts, ingots, etc.) were
 // designed at 16px and are multiplied by S so they scale up cleanly to fill
@@ -800,6 +950,24 @@ function drawToolIcon(ox,oy,kind,color){
     actx.fillStyle = '#5a4632';
     actx.fillRect(ox+5*S,oy+10*S,6*S,2*S);
     actx.fillRect(ox+7*S,oy+12*S,2*S,3*S);
+  } else if(kind==='axe'){
+    actx.fillStyle = '#6b4a2b';
+    for(let i=0;i<9;i++) actx.fillRect(ox+(4+i)*S, oy+(12-i)*S, 2*S,2*S);
+    actx.fillStyle = color;
+    actx.fillRect(ox+9*S,oy+1*S,4*S,2*S);
+    actx.fillRect(ox+8*S,oy+3*S,5*S,2*S);
+    actx.fillRect(ox+9*S,oy+5*S,3*S,2*S);
+    actx.globalAlpha = 0.25; actx.fillStyle = '#000';
+    actx.fillRect(ox+9*S,oy+3*S,5*S,S);
+    actx.globalAlpha = 1;
+  } else if(kind==='hoe'){
+    actx.fillStyle = '#6b4a2b';
+    for(let i=0;i<9;i++) actx.fillRect(ox+(4+i)*S, oy+(12-i)*S, 2*S,2*S);
+    actx.fillStyle = color;
+    actx.fillRect(ox+9*S,oy+1*S,5*S,2*S);
+    actx.globalAlpha = 0.25; actx.fillStyle = '#000';
+    actx.fillRect(ox+9*S,oy+1*S,5*S,S);
+    actx.globalAlpha = 1;
   }
 }
 const HEART_BITMAP = [
@@ -829,6 +997,81 @@ function drawBitmapIcon(ox,oy,bitmap,color,full){
       actx.fillRect(ox+c*2*S, oy+(2+r*2)*S, 2*S,2*S);
     }
   }
+}
+// Faceted gem-cut silhouette (narrow top, wide middle, tapered point) shared
+// by the diamond/emerald/ruby item icons - distinct from the flat ingot bar
+// shape so refined gems read differently from smelted metal at a glance.
+function drawGemIcon(ox,oy,mainColor,highlightColor){
+  actx.fillStyle = mainColor;
+  actx.fillRect(ox+6*S,oy+4*S,4*S,2*S);
+  actx.fillRect(ox+4*S,oy+6*S,8*S,2*S);
+  actx.fillRect(ox+3*S,oy+8*S,10*S,2*S);
+  actx.fillRect(ox+5*S,oy+10*S,6*S,2*S);
+  actx.fillRect(ox+7*S,oy+12*S,2*S,S);
+  actx.globalAlpha=0.4; actx.fillStyle=highlightColor;
+  actx.fillRect(ox+6*S,oy+5*S,2*S,3*S);
+  actx.globalAlpha=1;
+}
+// Four worn-armor silhouettes (helmet/chestplate/leggings/boots), shared
+// across every armor tier via a color swap - same approach as drawToolIcon.
+function drawArmorIcon(ox,oy,piece,color){
+  actx.fillStyle = color;
+  if(piece==='helmet'){
+    actx.fillRect(ox+4*S,oy+2*S,8*S,3*S);
+    actx.fillRect(ox+3*S,oy+4*S,10*S,4*S);
+    actx.globalAlpha=0.3; actx.fillStyle='#000';
+    actx.fillRect(ox+3*S,oy+7*S,3*S,2*S); actx.fillRect(ox+10*S,oy+7*S,3*S,2*S);
+    actx.globalAlpha=1;
+  } else if(piece==='chestplate'){
+    actx.fillRect(ox+3*S,oy+2*S,10*S,3*S);
+    actx.fillRect(ox+2*S,oy+5*S,12*S,7*S);
+    actx.globalAlpha=0.25; actx.fillStyle='#000';
+    actx.fillRect(ox+2*S,oy+5*S,3*S,7*S); actx.fillRect(ox+11*S,oy+5*S,3*S,7*S);
+    actx.globalAlpha=1;
+  } else if(piece==='leggings'){
+    actx.fillRect(ox+3*S,oy+2*S,10*S,4*S);
+    actx.fillRect(ox+3*S,oy+6*S,4*S,8*S);
+    actx.fillRect(ox+9*S,oy+6*S,4*S,8*S);
+    actx.globalAlpha=0.25; actx.fillStyle='#000';
+    actx.fillRect(ox+7*S,oy+6*S,2*S,3*S);
+    actx.globalAlpha=1;
+  } else if(piece==='boots'){
+    actx.fillRect(ox+4*S,oy+3*S,4*S,8*S);
+    actx.fillRect(ox+3*S,oy+10*S,7*S,3*S);
+    actx.globalAlpha=0.25; actx.fillStyle='#000';
+    actx.fillRect(ox+3*S,oy+12*S,7*S,S);
+    actx.globalAlpha=1;
+  }
+}
+// Bow: a stepped vertical arc (same stepped-diagonal technique as the
+// pick/axe handles above, just curved the other way) plus a taut string.
+function drawBowIcon(ox,oy){
+  actx.fillStyle = '#8a6a3f';
+  actx.fillRect(ox+9*S,oy+1*S,2*S,2*S);
+  actx.fillRect(ox+7*S,oy+2*S,2*S,2*S);
+  actx.fillRect(ox+6*S,oy+4*S,2*S,3*S);
+  actx.fillRect(ox+5*S,oy+7*S,2*S,2*S);
+  actx.fillRect(ox+6*S,oy+9*S,2*S,3*S);
+  actx.fillRect(ox+7*S,oy+12*S,2*S,2*S);
+  actx.fillRect(ox+9*S,oy+13*S,2*S,2*S);
+  actx.strokeStyle = '#d8d0c0';
+  actx.lineWidth = Math.max(1,S*0.5);
+  actx.beginPath();
+  actx.moveTo(ox+10*S, oy+2*S);
+  actx.lineTo(ox+7*S, oy+8*S);
+  actx.lineTo(ox+10*S, oy+14*S);
+  actx.stroke();
+}
+// Arrow: diagonal shaft (same stepped-rect technique as the sword/axe
+// handles), a light stone head, and red fletching at the tail.
+function drawArrowIcon(ox,oy){
+  actx.fillStyle = '#8a6a3f';
+  for(let i=0;i<9;i++) actx.fillRect(ox+(3+i)*S, oy+(12-i)*S, 2*S,2*S);
+  actx.fillStyle = '#b0b0b0';
+  actx.fillRect(ox+11*S,oy+1*S,3*S,3*S);
+  actx.fillStyle = '#c23b3b';
+  actx.fillRect(ox+2*S,oy+11*S,3*S,2*S);
+  actx.fillRect(ox+2*S,oy+13*S,2*S,2*S);
 }
 
 function buildTextureAtlas(){
@@ -879,6 +1122,60 @@ function buildTextureAtlas(){
       actx.fillRect(ox+x, oy+grassRows-S, 1, len);
     }
     edgeShade(ox,oy);
+  });
+  define('farmland_top',(ox,oy,rand)=>{
+    fillNoisy(ox,oy,'#6b4726',16,rand);
+    actx.fillStyle='#4a2f18';
+    for(let row=0; row<4; row++){
+      const y = Math.round(2*S + row*3.5*S);
+      for(let x=0;x<CELL_PX;x++){ if(rand()<0.85) actx.fillRect(ox+x, oy+y, 1, Math.max(1,Math.round(S*0.7))); }
+    }
+    actx.fillStyle='#8a5a34';
+    for(let i=0;i<Math.round(5*S);i++){
+      const x=Math.floor(rand()*CELL_PX), y=Math.floor(rand()*CELL_PX);
+      actx.fillRect(ox+x,oy+y,S,S);
+    }
+    edgeShade(ox,oy);
+  });
+  define('farmland_side',(ox,oy,rand)=>{
+    fillNoisy(ox,oy,'#8a5a34',18,rand);
+    actx.fillStyle='#5a3a1f';
+    for(let x=0;x<CELL_PX;x++){ if(rand()<0.9) actx.fillRect(ox+x,oy,1,Math.max(1,Math.round(S*0.9))); }
+    edgeShade(ox,oy);
+  });
+  // Wheat crop growth stages - mostly-transparent (cutout) so the blades
+  // read as thin plants rather than a solid block face, growing taller/
+  // denser and shifting green-to-gold across the 4 stages.
+  function drawWheatStage(ox,oy,rand,stage){
+    const density = [0.12,0.22,0.34,0.5][stage];
+    const maxH = [5,8,11,14][stage] * S;
+    const colors = stage<3 ? ['#6aa845','#4d7c2e'] : ['#d4b23c','#a68a2c'];
+    for(let x=0;x<CELL_PX;x++){
+      if(rand()>=density) continue;
+      const h = Math.max(2, Math.floor(rand()*maxH));
+      actx.fillStyle = rand()<0.5 ? colors[0] : colors[1];
+      actx.fillRect(ox+x, oy+CELL_PX-h, 1, h);
+    }
+  }
+  define('wheat_stage0',(ox,oy,rand)=>drawWheatStage(ox,oy,rand,0));
+  define('wheat_stage1',(ox,oy,rand)=>drawWheatStage(ox,oy,rand,1));
+  define('wheat_stage2',(ox,oy,rand)=>drawWheatStage(ox,oy,rand,2));
+  define('wheat_stage3',(ox,oy,rand)=>drawWheatStage(ox,oy,rand,3));
+  // Boat: a hull silhouette (cutout - mostly transparent) with a plank-brown
+  // fill and a darker rim, viewed as if from slightly above, same "full cube
+  // face gets a mostly-transparent sprite" trick as the wheat stages above.
+  define('boat',(ox,oy)=>{
+    actx.fillStyle = '#a97c50';
+    actx.fillRect(ox+2*S,oy+7*S,12*S,5*S);
+    actx.fillRect(ox+3*S,oy+6*S,10*S,S);
+    actx.fillRect(ox+4*S,oy+5*S,8*S,S);
+    actx.fillStyle = '#7a5636';
+    actx.fillRect(ox+2*S,oy+11*S,12*S,S);
+    actx.fillRect(ox+2*S,oy+7*S,S,5*S);
+    actx.fillRect(ox+13*S,oy+7*S,S,5*S);
+    actx.globalAlpha=0.3; actx.fillStyle='#fff';
+    actx.fillRect(ox+4*S,oy+8*S,4*S,S);
+    actx.globalAlpha=1;
   });
   define('stone',(ox,oy,rand)=>{
     fillNoisy(ox,oy,'#8d8d8d',14,rand);
@@ -1002,6 +1299,72 @@ function buildTextureAtlas(){
       const x=Math.floor(rand()*CELL_PX), y=Math.floor(rand()*CELL_PX);
       actx.fillRect(ox+x,oy+y,1,1);
     }
+    edgeShade(ox,oy);
+  });
+  define('bronze_ore',(ox,oy,rand)=>{
+    fillNoisy(ox,oy,'#8d8d8d',14,rand);
+    for(let c=0;c<4;c++){
+      const cx=4+Math.floor(rand()*(CELL_PX-8)), cy=4+Math.floor(rand()*(CELL_PX-8));
+      actx.fillStyle = rand()<0.5 ? '#b5722f' : '#d99a5c';
+      blob(ox,oy,cx,cy, 3+Math.floor(rand()*3), Math.max(1,Math.round(S*0.8)), rand);
+    }
+    actx.fillStyle='#f0c98c';
+    for(let i=0;i<Math.round(2*S);i++){ const x=Math.floor(rand()*CELL_PX), y=Math.floor(rand()*CELL_PX); actx.fillRect(ox+x,oy+y,1,1); }
+    edgeShade(ox,oy);
+  });
+  define('gold_ore',(ox,oy,rand)=>{
+    fillNoisy(ox,oy,'#8d8d8d',14,rand);
+    for(let c=0;c<4;c++){
+      const cx=4+Math.floor(rand()*(CELL_PX-8)), cy=4+Math.floor(rand()*(CELL_PX-8));
+      actx.fillStyle = rand()<0.5 ? '#e0b32e' : '#f7d15c';
+      blob(ox,oy,cx,cy, 3+Math.floor(rand()*3), Math.max(1,Math.round(S*0.8)), rand);
+    }
+    actx.fillStyle='#fff2b0';
+    for(let i=0;i<Math.round(3*S);i++){ const x=Math.floor(rand()*CELL_PX), y=Math.floor(rand()*CELL_PX); actx.fillRect(ox+x,oy+y,1,1); }
+    edgeShade(ox,oy);
+  });
+  define('emerald_ore',(ox,oy,rand)=>{
+    fillNoisy(ox,oy,'#8d8d8d',14,rand);
+    for(let c=0;c<3;c++){
+      const cx=4+Math.floor(rand()*(CELL_PX-8)), cy=4+Math.floor(rand()*(CELL_PX-8));
+      actx.fillStyle = rand()<0.5 ? '#2e9e57' : '#3ecb6b';
+      blob(ox,oy,cx,cy, 2+Math.floor(rand()*3), Math.max(1,Math.round(S*0.9)), rand);
+    }
+    actx.fillStyle='#a0f0bd';
+    for(let i=0;i<Math.round(3*S);i++){ const x=Math.floor(rand()*CELL_PX), y=Math.floor(rand()*CELL_PX); actx.fillRect(ox+x,oy+y,1,1); }
+    edgeShade(ox,oy);
+  });
+  define('ruby_ore',(ox,oy,rand)=>{
+    fillNoisy(ox,oy,'#8d8d8d',14,rand);
+    for(let c=0;c<3;c++){
+      const cx=4+Math.floor(rand()*(CELL_PX-8)), cy=4+Math.floor(rand()*(CELL_PX-8));
+      actx.fillStyle = rand()<0.5 ? '#a81f33' : '#d1293f';
+      blob(ox,oy,cx,cy, 2+Math.floor(rand()*3), Math.max(1,Math.round(S*0.9)), rand);
+    }
+    actx.fillStyle='#ff7a8a';
+    for(let i=0;i<Math.round(3*S);i++){ const x=Math.floor(rand()*CELL_PX), y=Math.floor(rand()*CELL_PX); actx.fillRect(ox+x,oy+y,1,1); }
+    edgeShade(ox,oy);
+  });
+  define('diamond_ore',(ox,oy,rand)=>{
+    fillNoisy(ox,oy,'#8d8d8d',14,rand);
+    for(let c=0;c<3;c++){
+      const cx=4+Math.floor(rand()*(CELL_PX-8)), cy=4+Math.floor(rand()*(CELL_PX-8));
+      actx.fillStyle = rand()<0.5 ? '#4ecfcf' : '#7fe0e0';
+      blob(ox,oy,cx,cy, 2+Math.floor(rand()*3), Math.max(1,Math.round(S*0.9)), rand);
+    }
+    actx.fillStyle='#c9fbfb';
+    for(let i=0;i<Math.round(3*S);i++){ const x=Math.floor(rand()*CELL_PX), y=Math.floor(rand()*CELL_PX); actx.fillRect(ox+x,oy+y,1,1); }
+    edgeShade(ox,oy);
+  });
+  define('tungsten_ore',(ox,oy,rand)=>{
+    fillNoisy(ox,oy,'#6d6d75',14,rand);
+    for(let c=0;c<4;c++){
+      const cx=4+Math.floor(rand()*(CELL_PX-8)), cy=4+Math.floor(rand()*(CELL_PX-8));
+      actx.fillStyle = rand()<0.5 ? '#8fa3b0' : '#b7c8d1';
+      blob(ox,oy,cx,cy, 3+Math.floor(rand()*3), Math.max(1,Math.round(S*0.8)), rand);
+    }
+    actx.fillStyle='#dde8ee';
+    for(let i=0;i<Math.round(2*S);i++){ const x=Math.floor(rand()*CELL_PX), y=Math.floor(rand()*CELL_PX); actx.fillRect(ox+x,oy+y,1,1); }
     edgeShade(ox,oy);
   });
   define('cobblestone',(ox,oy,rand)=>{
@@ -1163,12 +1526,70 @@ function buildTextureAtlas(){
     actx.fillStyle='#9a9a9a'; actx.fillRect(ox+3*S,oy+9*S,10*S,S);
     actx.globalAlpha=0.4; actx.fillStyle='#fff'; actx.fillRect(ox+4*S,oy+7*S,3*S,S); actx.globalAlpha=1;
   });
+  define('gold_ingot',(ox,oy)=>{
+    actx.fillStyle='#e0b32e'; actx.fillRect(ox+3*S,oy+6*S,10*S,4*S);
+    actx.fillStyle='#fff2b0'; actx.fillRect(ox+3*S,oy+6*S,10*S,S);
+    actx.fillStyle='#a9791a'; actx.fillRect(ox+3*S,oy+9*S,10*S,S);
+    actx.globalAlpha=0.4; actx.fillStyle='#fff'; actx.fillRect(ox+4*S,oy+7*S,3*S,S); actx.globalAlpha=1;
+  });
+  define('bronze_ingot',(ox,oy)=>{
+    actx.fillStyle='#b5722f'; actx.fillRect(ox+3*S,oy+6*S,10*S,4*S);
+    actx.fillStyle='#e8b378'; actx.fillRect(ox+3*S,oy+6*S,10*S,S);
+    actx.fillStyle='#7a4a1d'; actx.fillRect(ox+3*S,oy+9*S,10*S,S);
+    actx.globalAlpha=0.4; actx.fillStyle='#fff'; actx.fillRect(ox+4*S,oy+7*S,3*S,S); actx.globalAlpha=1;
+  });
+  define('tungsten_ingot',(ox,oy)=>{
+    actx.fillStyle='#9fb0bb'; actx.fillRect(ox+3*S,oy+6*S,10*S,4*S);
+    actx.fillStyle='#dbe6ec'; actx.fillRect(ox+3*S,oy+6*S,10*S,S);
+    actx.fillStyle='#5f6f79'; actx.fillRect(ox+3*S,oy+9*S,10*S,S);
+    actx.globalAlpha=0.4; actx.fillStyle='#fff'; actx.fillRect(ox+4*S,oy+7*S,3*S,S); actx.globalAlpha=1;
+  });
+  define('gem_diamond',(ox,oy)=>drawGemIcon(ox,oy,'#7fe0e0','#eafffe'));
+  define('gem_emerald',(ox,oy)=>drawGemIcon(ox,oy,'#3ecb6b','#c8ffdd'));
+  define('gem_ruby',(ox,oy)=>drawGemIcon(ox,oy,'#d1293f','#ffb0ba'));
   define('pick_wood',(ox,oy)=>drawToolIcon(ox,oy,'pick','#a97c50'));
   define('pick_stone',(ox,oy)=>drawToolIcon(ox,oy,'pick','#9a9a9a'));
   define('pick_iron',(ox,oy)=>drawToolIcon(ox,oy,'pick','#e8e8e8'));
+  define('pick_bronze',(ox,oy)=>drawToolIcon(ox,oy,'pick','#b5722f'));
+  define('pick_gold',(ox,oy)=>drawToolIcon(ox,oy,'pick','#f2c94c'));
+  define('pick_diamond',(ox,oy)=>drawToolIcon(ox,oy,'pick','#a0e8e8'));
+  define('pick_tungsten',(ox,oy)=>drawToolIcon(ox,oy,'pick','#c3d2da'));
   define('sword_wood',(ox,oy)=>drawToolIcon(ox,oy,'sword','#c9a26a'));
   define('sword_stone',(ox,oy)=>drawToolIcon(ox,oy,'sword','#b0b0b0'));
   define('sword_iron',(ox,oy)=>drawToolIcon(ox,oy,'sword','#f0f0f0'));
+  define('sword_bronze',(ox,oy)=>drawToolIcon(ox,oy,'sword','#b5722f'));
+  define('sword_gold',(ox,oy)=>drawToolIcon(ox,oy,'sword','#f2c94c'));
+  define('sword_diamond',(ox,oy)=>drawToolIcon(ox,oy,'sword','#a0e8e8'));
+  define('sword_tungsten',(ox,oy)=>drawToolIcon(ox,oy,'sword','#c3d2da'));
+  define('axe_wood',(ox,oy)=>drawToolIcon(ox,oy,'axe','#a97c50'));
+  define('axe_stone',(ox,oy)=>drawToolIcon(ox,oy,'axe','#9a9a9a'));
+  define('axe_iron',(ox,oy)=>drawToolIcon(ox,oy,'axe','#e8e8e8'));
+  define('axe_bronze',(ox,oy)=>drawToolIcon(ox,oy,'axe','#b5722f'));
+  define('axe_gold',(ox,oy)=>drawToolIcon(ox,oy,'axe','#f2c94c'));
+  define('axe_diamond',(ox,oy)=>drawToolIcon(ox,oy,'axe','#a0e8e8'));
+  define('axe_tungsten',(ox,oy)=>drawToolIcon(ox,oy,'axe','#c3d2da'));
+  define('hoe_wood',(ox,oy)=>drawToolIcon(ox,oy,'hoe','#a97c50'));
+  define('hoe_stone',(ox,oy)=>drawToolIcon(ox,oy,'hoe','#9a9a9a'));
+  define('hoe_iron',(ox,oy)=>drawToolIcon(ox,oy,'hoe','#e8e8e8'));
+  define('iron_helmet',(ox,oy)=>drawArmorIcon(ox,oy,'helmet','#c8c8c8'));
+  define('iron_chestplate',(ox,oy)=>drawArmorIcon(ox,oy,'chestplate','#c8c8c8'));
+  define('iron_leggings',(ox,oy)=>drawArmorIcon(ox,oy,'leggings','#c8c8c8'));
+  define('iron_boots',(ox,oy)=>drawArmorIcon(ox,oy,'boots','#c8c8c8'));
+  define('diamond_helmet',(ox,oy)=>drawArmorIcon(ox,oy,'helmet','#a0e8e8'));
+  define('diamond_chestplate',(ox,oy)=>drawArmorIcon(ox,oy,'chestplate','#a0e8e8'));
+  define('diamond_leggings',(ox,oy)=>drawArmorIcon(ox,oy,'leggings','#a0e8e8'));
+  define('diamond_boots',(ox,oy)=>drawArmorIcon(ox,oy,'boots','#a0e8e8'));
+  define('feather',(ox,oy)=>{
+    actx.fillStyle = '#e8e4da';
+    for(let i=0;i<9;i++) actx.fillRect(ox+(10-i)*S, oy+(3+i)*S, 2*S,2*S);
+    actx.globalAlpha=0.35; actx.fillStyle='#b8b09a';
+    for(let i=0;i<9;i++) actx.fillRect(ox+(10-i)*S, oy+(3+i)*S, S,2*S);
+    actx.globalAlpha=1;
+    actx.fillStyle='#8a6a3f';
+    actx.fillRect(ox+2*S,oy+12*S,3*S,S);
+  });
+  define('bow',(ox,oy)=>drawBowIcon(ox,oy));
+  define('arrow',(ox,oy)=>drawArrowIcon(ox,oy));
   define('raw_food',(ox,oy)=>{
     actx.fillStyle='#c9584a'; actx.fillRect(ox+4*S,oy+5*S,8*S,6*S);
     actx.fillStyle='#e08a7a'; actx.fillRect(ox+5*S,oy+6*S,3*S,2*S);
@@ -1179,6 +1600,46 @@ function buildTextureAtlas(){
     actx.fillStyle='#a5713f'; actx.fillRect(ox+4*S,oy+5*S,8*S,6*S);
     actx.fillStyle='#c98f52'; actx.fillRect(ox+5*S,oy+6*S,3*S,2*S);
     actx.fillStyle='#5a3a1f'; actx.fillRect(ox+5*S,oy+6*S,S,4*S); actx.fillRect(ox+8*S,oy+6*S,S,4*S);
+  });
+  define('wheat_seeds',(ox,oy)=>{
+    actx.fillStyle = '#c9a24a';
+    const pts = [[5,6],[8,5],[10,7],[6,9],[9,10],[4,10],[11,10]];
+    for(const p of pts) actx.fillRect(ox+p[0]*S,oy+p[1]*S,S,S);
+  });
+  define('wheat',(ox,oy)=>{
+    // Same diagonal-stepped-stroke technique as the feather icon, recolored
+    // gold - reads as a bundle of harvested wheat stalks.
+    actx.fillStyle = '#d4b23c';
+    for(let i=0;i<8;i++) actx.fillRect(ox+(4+i)*S, oy+(12-i)*S, 2*S,2*S);
+    actx.globalAlpha=0.35; actx.fillStyle='#a68a2c';
+    for(let i=0;i<8;i++) actx.fillRect(ox+(4+i)*S, oy+(12-i)*S, S,2*S);
+    actx.globalAlpha=1;
+    actx.fillStyle='#8a6a3f';
+    actx.fillRect(ox+3*S,oy+12*S,3*S,S);
+  });
+  define('bread',(ox,oy)=>{
+    actx.fillStyle='#c9924a'; actx.fillRect(ox+3*S,oy+6*S,10*S,6*S);
+    actx.fillStyle='#a5713f'; actx.fillRect(ox+3*S,oy+11*S,10*S,S);
+    actx.globalAlpha=0.3; actx.fillStyle='#fff'; actx.fillRect(ox+4*S,oy+7*S,3*S,2*S); actx.globalAlpha=1;
+    actx.fillStyle='#8a5a2f';
+    actx.fillRect(ox+5*S,oy+6*S,S,2*S); actx.fillRect(ox+8*S,oy+6*S,S,2*S); actx.fillRect(ox+11*S,oy+6*S,S,2*S);
+  });
+  define('bucket',(ox,oy)=>{
+    actx.strokeStyle='#7a7a7a'; actx.lineWidth=Math.max(1,S*0.8);
+    actx.beginPath(); actx.arc(ox+8*S,oy+5*S,4*S,Math.PI,0); actx.stroke();
+    actx.fillStyle='#9a9a9a'; actx.fillRect(ox+4*S,oy+6*S,8*S,7*S);
+    actx.fillStyle='#c4c4c4'; actx.fillRect(ox+3.5*S,oy+5.5*S,9*S,1.5*S);
+    actx.fillStyle='#6a6a6a'; actx.fillRect(ox+4*S,oy+12*S,8*S,S);
+    actx.globalAlpha=0.35; actx.fillStyle='#fff'; actx.fillRect(ox+5*S,oy+7*S,S,4*S); actx.globalAlpha=1;
+  });
+  define('water_bucket',(ox,oy)=>{
+    actx.strokeStyle='#7a7a7a'; actx.lineWidth=Math.max(1,S*0.8);
+    actx.beginPath(); actx.arc(ox+8*S,oy+5*S,4*S,Math.PI,0); actx.stroke();
+    actx.fillStyle='#9a9a9a'; actx.fillRect(ox+4*S,oy+6*S,8*S,7*S);
+    actx.fillStyle='#3d72c9'; actx.fillRect(ox+4.5*S,oy+6.5*S,7*S,2.5*S);
+    actx.globalAlpha=0.4; actx.fillStyle='#fff'; actx.fillRect(ox+5*S,oy+7*S,4*S,S); actx.globalAlpha=1;
+    actx.fillStyle='#c4c4c4'; actx.fillRect(ox+3.5*S,oy+5.5*S,9*S,1.5*S);
+    actx.fillStyle='#6a6a6a'; actx.fillRect(ox+4*S,oy+12*S,8*S,S);
   });
   define('heart_full',(ox,oy)=>drawBitmapIcon(ox,oy,HEART_BITMAP,'#d23c3c',true));
   define('heart_half',(ox,oy)=>drawBitmapIcon(ox,oy,HEART_BITMAP,'#d23c3c',false));
@@ -1193,6 +1654,11 @@ RENDER_LAYER[BLOCKS.LEAVES] = 'cutout';
 RENDER_LAYER[BLOCKS.WATER] = 'glass';
 RENDER_LAYER[BLOCKS.GLASS] = 'glass';
 RENDER_LAYER[BLOCKS.DOOR_OPEN] = 'cutout';
+RENDER_LAYER[BLOCKS.WHEAT_0] = 'cutout';
+RENDER_LAYER[BLOCKS.WHEAT_1] = 'cutout';
+RENDER_LAYER[BLOCKS.WHEAT_2] = 'cutout';
+RENDER_LAYER[BLOCKS.WHEAT_3] = 'cutout';
+RENDER_LAYER[BLOCKS.BOAT] = 'cutout';
 function blockRenderLayer(id){ return RENDER_LAYER[id] || 'opaque'; }
 
 function resolveBlockFaceUV(blockId, dir){
@@ -1585,6 +2051,10 @@ const GameState = { state:'menu' }; // menu | playing | paused | inventory | cra
 //////////////////////////////////////////////////////////////
 const PLAYER_WIDTH=0.6, PLAYER_HEIGHT=1.8, EYE_HEIGHT=1.62;
 const GRAVITY=-24, JUMP_SPEED=7.4, WALK_SPEED=4.3, SPRINT_SPEED=5.6, CROUCH_SPEED=1.8, FLY_SPEED=8.5, FLY_VERT_SPEED=6;
+// Impact speed of a fall from rest through exactly SAFE_FALL_BLOCKS blocks,
+// via v=sqrt(2*|GRAVITY|*h) - falls shorter than this take no damage at all.
+const SAFE_FALL_BLOCKS = 6;
+const FALL_DAMAGE_SPEED_THRESHOLD = Math.sqrt(2*Math.abs(GRAVITY)*SAFE_FALL_BLOCKS);
 const REACH_DISTANCE=6;
 
 function makeEmptySlots(n){ const a=new Array(n); for(let i=0;i<n;i++) a[i]=null; return a; }
@@ -1602,6 +2072,10 @@ const player = {
   selectedHotbar:0,
   hotbar: makeEmptySlots(9),
   inventory: makeEmptySlots(18),
+  // 4 equip slots: [0]=head, [1]=chest, [2]=legs, [3]=feet. Not enforced by
+  // slot type (see armorSlotAccessor) - only pieces with a matching
+  // ItemDef[].armor entry actually contribute defense (armorDefenseTotal).
+  armor: makeEmptySlots(4),
 };
 
 function itemDurabilityMax(id){ return ItemDef[id] && ItemDef[id].durability; }
@@ -1774,7 +2248,7 @@ function updatePlayerPhysics(dt){
         p.onGround=true;
         if(p.mode==='survival'){
           const fallSpeed=-p.vel.y;
-          if(fallSpeed>9){ const dmg=Math.floor((fallSpeed-9)*1.4); if(dmg>0) damagePlayer(dmg,'fall'); }
+          if(fallSpeed>FALL_DAMAGE_SPEED_THRESHOLD){ const dmg=Math.floor((fallSpeed-FALL_DAMAGE_SPEED_THRESHOLD)*1.4); if(dmg>0) damagePlayer(dmg,'fall'); }
         }
       }
       p.vel.y=0;
@@ -1858,6 +2332,12 @@ function miningSecondsFor(blockId){
     if(heldTier < def.tier) return Infinity;
     return Math.max(0.08, def.hardness/(1+heldTier*1.4));
   }
+  // Wood (logs/planks) is always breakable bare-handed, unlike pickaxe-tier
+  // blocks - an axe isn't a gate, just a speed bonus on top of that, using
+  // the same falloff curve as pickaxe-vs-stone for consistency.
+  if(def.axeBonus && heldDef && heldDef.tool && heldDef.tool.type==='axe'){
+    return Math.max(0.08, def.hardness/(1+heldDef.tool.tier*1.4));
+  }
   return Math.max(0.08, def.hardness);
 }
 
@@ -1892,6 +2372,14 @@ function updateMining(dt){
     // Pops out as a physical ground item (matching real Minecraft) instead
     // of jumping straight into the hotbar - the player has to walk over it.
     if(def.drop!=null) spawnItemEntity(x+0.5, y+0.3, z+0.5, def.drop, 1);
+    // dropExtra: an optional bonus drop on top of the main one (bonus Wheat
+    // Seeds from grass or mature wheat) - same {item,min,max} shape as
+    // MOB_STATS.lootExtra, same "stacks on top of the normal drop" behavior.
+    if(def.dropExtra){
+      const ex = def.dropExtra;
+      const n = ex.min + Math.floor(Math.random()*(ex.max-ex.min+1));
+      if(n>0) spawnItemEntity(x+0.5, y+0.35, z+0.5, ex.item, n);
+    }
     World.set(x,y,z,BLOCKS.AIR);
     breakProgress=0; breakTargetKey=null;
     hideBreakBar();
@@ -1915,22 +2403,34 @@ function wouldPlaceInsidePlayer(bx,by,bz){
 }
 
 function tryPlaceOrInteract(){
-  if(GameState.state!=='playing' || !currentTarget) return;
-  const targetId = World.get(currentTarget.x,currentTarget.y,currentTarget.z);
-  const targetDef = BlockDef[targetId];
-  if(targetDef && targetDef.interact){
-    openInteract(targetDef.interact, currentTarget.x,currentTarget.y,currentTarget.z);
-    return;
+  if(GameState.state!=='playing') return;
+  // Block interaction and block placement both need something in reach, but
+  // general item use (food, buckets, the bow) does not - a bow in particular
+  // has to fire along the camera direction even when nothing is targeted, so
+  // only the two currentTarget-dependent branches below early-return on it.
+  if(currentTarget){
+    const targetId = World.get(currentTarget.x,currentTarget.y,currentTarget.z);
+    const targetDef = BlockDef[targetId];
+    if(targetDef && targetDef.interact){
+      openInteract(targetDef.interact, currentTarget.x,currentTarget.y,currentTarget.z);
+      return;
+    }
   }
   const stack = player.hotbar[player.selectedHotbar];
   if(!stack) return;
   const idef = ItemDef[stack.id];
   if(!idef || !idef.isBlock){ tryUseItem(stack); return; }
+  if(!currentTarget) return;
   const px=currentTarget.px, py=currentTarget.py, pz=currentTarget.pz;
   if(py<0||py>=WORLD_HEIGHT) return;
   if(!World.inBounds(px,py,pz)) return;
   if(wouldPlaceInsidePlayer(px,py,pz)) return;
   if(World.get(px,py,pz)!==BLOCKS.AIR) return;
+  // Boats are the one block restricted to a specific surface - only floats
+  // where placed directly on top of Water, matching the "boats belong on
+  // water" expectation even though this engine has no swimming/riding
+  // physics for them to actually sail on (see the Boat BlockDef comment).
+  if(stack.id===BLOCKS.BOAT && World.get(px,py-1,pz)!==BLOCKS.WATER) return;
   World.set(px,py,pz,stack.id);
   playSound('place');
   if(player.mode!=='creative'){
@@ -2021,11 +2521,70 @@ const RECIPES = [
   // Bed: plank surface over a stick-leg frame, 3 wide x 2 tall. Also
   // deliberately mixed ingredients for the same reason as the door above.
   { id:'bed', shaped:true, pattern:['PPP','SSS'], key:{P:BLOCKS.PLANKS,S:ITEMS_EXTRA.STICK}, output:{item:BLOCKS.BED,count:1} },
+  // Same V-shape as vanilla Minecraft's bucket recipe.
+  { id:'bucket', shaped:true, pattern:['I.I','.I.'], key:{I:ITEMS_EXTRA.IRON_INGOT}, output:{item:ITEMS_EXTRA.BUCKET,count:1} },
+  // Same lopsided-head-plus-handle shape as vanilla's axe.
+  { id:'axe_wood', shaped:true, pattern:['PP','PS','.S'], key:{P:BLOCKS.PLANKS,S:ITEMS_EXTRA.STICK}, output:{item:ITEMS_EXTRA.AXE_WOOD,count:1} },
+  { id:'axe_stone', shaped:true, pattern:['PP','PS','.S'], key:{P:BLOCKS.STONE,S:ITEMS_EXTRA.STICK}, output:{item:ITEMS_EXTRA.AXE_STONE,count:1} },
+  { id:'axe_iron', shaped:true, pattern:['PP','PS','.S'], key:{P:ITEMS_EXTRA.IRON_INGOT,S:ITEMS_EXTRA.STICK}, output:{item:ITEMS_EXTRA.AXE_IRON,count:1} },
+  // Same three tool shapes again, one full set per new tool-bearing
+  // material (bronze/gold/diamond/tungsten - emerald and ruby are gem-only,
+  // same as vanilla's own emerald has no tool tier).
+  { id:'pick_bronze', shaped:true, pattern:['PPP','.S.','.S.'], key:{P:ITEMS_EXTRA.BRONZE_INGOT,S:ITEMS_EXTRA.STICK}, output:{item:ITEMS_EXTRA.PICK_BRONZE,count:1} },
+  { id:'sword_bronze', shaped:true, pattern:['P','P','S'], key:{P:ITEMS_EXTRA.BRONZE_INGOT,S:ITEMS_EXTRA.STICK}, output:{item:ITEMS_EXTRA.SWORD_BRONZE,count:1} },
+  { id:'axe_bronze', shaped:true, pattern:['PP','PS','.S'], key:{P:ITEMS_EXTRA.BRONZE_INGOT,S:ITEMS_EXTRA.STICK}, output:{item:ITEMS_EXTRA.AXE_BRONZE,count:1} },
+  { id:'pick_gold', shaped:true, pattern:['PPP','.S.','.S.'], key:{P:ITEMS_EXTRA.GOLD_INGOT,S:ITEMS_EXTRA.STICK}, output:{item:ITEMS_EXTRA.PICK_GOLD,count:1} },
+  { id:'sword_gold', shaped:true, pattern:['P','P','S'], key:{P:ITEMS_EXTRA.GOLD_INGOT,S:ITEMS_EXTRA.STICK}, output:{item:ITEMS_EXTRA.SWORD_GOLD,count:1} },
+  { id:'axe_gold', shaped:true, pattern:['PP','PS','.S'], key:{P:ITEMS_EXTRA.GOLD_INGOT,S:ITEMS_EXTRA.STICK}, output:{item:ITEMS_EXTRA.AXE_GOLD,count:1} },
+  { id:'pick_diamond', shaped:true, pattern:['PPP','.S.','.S.'], key:{P:ITEMS_EXTRA.DIAMOND,S:ITEMS_EXTRA.STICK}, output:{item:ITEMS_EXTRA.PICK_DIAMOND,count:1} },
+  { id:'sword_diamond', shaped:true, pattern:['P','P','S'], key:{P:ITEMS_EXTRA.DIAMOND,S:ITEMS_EXTRA.STICK}, output:{item:ITEMS_EXTRA.SWORD_DIAMOND,count:1} },
+  { id:'axe_diamond', shaped:true, pattern:['PP','PS','.S'], key:{P:ITEMS_EXTRA.DIAMOND,S:ITEMS_EXTRA.STICK}, output:{item:ITEMS_EXTRA.AXE_DIAMOND,count:1} },
+  { id:'pick_tungsten', shaped:true, pattern:['PPP','.S.','.S.'], key:{P:ITEMS_EXTRA.TUNGSTEN_INGOT,S:ITEMS_EXTRA.STICK}, output:{item:ITEMS_EXTRA.PICK_TUNGSTEN,count:1} },
+  { id:'sword_tungsten', shaped:true, pattern:['P','P','S'], key:{P:ITEMS_EXTRA.TUNGSTEN_INGOT,S:ITEMS_EXTRA.STICK}, output:{item:ITEMS_EXTRA.SWORD_TUNGSTEN,count:1} },
+  { id:'axe_tungsten', shaped:true, pattern:['PP','PS','.S'], key:{P:ITEMS_EXTRA.TUNGSTEN_INGOT,S:ITEMS_EXTRA.STICK}, output:{item:ITEMS_EXTRA.AXE_TUNGSTEN,count:1} },
+  // Armor, same shapes as vanilla Minecraft's own armor recipes. Two tiers
+  // (iron/diamond) - see the ItemDef comment above for why the other
+  // materials don't get armor sets.
+  { id:'helmet_iron', shaped:true, pattern:['PPP','P.P'], key:{P:ITEMS_EXTRA.IRON_INGOT}, output:{item:ITEMS_EXTRA.IRON_HELMET,count:1} },
+  { id:'chestplate_iron', shaped:true, pattern:['P.P','PPP','PPP'], key:{P:ITEMS_EXTRA.IRON_INGOT}, output:{item:ITEMS_EXTRA.IRON_CHESTPLATE,count:1} },
+  { id:'leggings_iron', shaped:true, pattern:['PPP','P.P','P.P'], key:{P:ITEMS_EXTRA.IRON_INGOT}, output:{item:ITEMS_EXTRA.IRON_LEGGINGS,count:1} },
+  { id:'boots_iron', shaped:true, pattern:['P.P','P.P'], key:{P:ITEMS_EXTRA.IRON_INGOT}, output:{item:ITEMS_EXTRA.IRON_BOOTS,count:1} },
+  { id:'helmet_diamond', shaped:true, pattern:['PPP','P.P'], key:{P:ITEMS_EXTRA.DIAMOND}, output:{item:ITEMS_EXTRA.DIAMOND_HELMET,count:1} },
+  { id:'chestplate_diamond', shaped:true, pattern:['P.P','PPP','PPP'], key:{P:ITEMS_EXTRA.DIAMOND}, output:{item:ITEMS_EXTRA.DIAMOND_CHESTPLATE,count:1} },
+  { id:'leggings_diamond', shaped:true, pattern:['PPP','P.P','P.P'], key:{P:ITEMS_EXTRA.DIAMOND}, output:{item:ITEMS_EXTRA.DIAMOND_LEGGINGS,count:1} },
+  { id:'boots_diamond', shaped:true, pattern:['P.P','P.P'], key:{P:ITEMS_EXTRA.DIAMOND}, output:{item:ITEMS_EXTRA.DIAMOND_BOOTS,count:1} },
+  // Bow/arrow: simplified from vanilla (no string item in this game) - 3
+  // sticks makes a bow, a stick+feather makes a bundle of arrows. Both are
+  // safe as shapeless recipes: 'bow' is the only shapeless recipe keyed on
+  // STICK alone, and 'arrow' has 2 distinct ingredient types so it can never
+  // be shadowed by (or shadow) a single-item-type shapeless recipe.
+  { id:'bow', shapeless:true, inputs:[{item:ITEMS_EXTRA.STICK,count:3}], output:{item:ITEMS_EXTRA.BOW,count:1} },
+  { id:'arrow', shapeless:true, inputs:[{item:ITEMS_EXTRA.STICK,count:1},{item:ITEMS_EXTRA.FEATHER,count:1}], output:{item:ITEMS_EXTRA.ARROW,count:4} },
+  // Hoe: same vanilla shape as the axe's handle but a flat 2-wide blade with
+  // no lower prong, and (like the axe/pick/sword sets above) mixed with
+  // STICK so it can't be shadowed by a single-item-type shapeless recipe.
+  { id:'hoe_wood', shaped:true, pattern:['PP','.S','.S'], key:{P:BLOCKS.PLANKS,S:ITEMS_EXTRA.STICK}, output:{item:ITEMS_EXTRA.HOE_WOOD,count:1} },
+  { id:'hoe_stone', shaped:true, pattern:['PP','.S','.S'], key:{P:BLOCKS.STONE,S:ITEMS_EXTRA.STICK}, output:{item:ITEMS_EXTRA.HOE_STONE,count:1} },
+  { id:'hoe_iron', shaped:true, pattern:['PP','.S','.S'], key:{P:ITEMS_EXTRA.IRON_INGOT,S:ITEMS_EXTRA.STICK}, output:{item:ITEMS_EXTRA.HOE_IRON,count:1} },
+  { id:'bread', shapeless:true, inputs:[{item:ITEMS_EXTRA.WHEAT,count:3}], output:{item:ITEMS_EXTRA.BREAD,count:1} },
+  // Boat: the exact vanilla Minecraft shape and ingredient (5 Planks, no
+  // stick/nails/etc), as explicitly requested. This is a pure single-item-
+  // type shaped recipe sitting right on top of the shapeless Crafting Table
+  // recipe's own trigger (4+ Planks) - unlike every other shaped recipe in
+  // this file, it deliberately does NOT mix in a second ingredient to dodge
+  // that collision, because "same recipe as Minecraft" means exactly 5
+  // Planks. This is what motivated fixing matchRecipe to check shaped
+  // recipes before shapeless ones (see its comment) instead of once again
+  // reaching for the second-ingredient workaround.
+  { id:'boat', shaped:true, pattern:['P.P','PPP'], key:{P:BLOCKS.PLANKS}, output:{item:BLOCKS.BOAT,count:1} },
 ];
 const SMELT_RECIPES = [
   { input:BLOCKS.IRON_ORE, output:ITEMS_EXTRA.IRON_INGOT, time:4 },
   { input:BLOCKS.SAND, output:BLOCKS.GLASS, time:3 },
   { input:BLOCKS.STONE, output:BLOCKS.BRICKS, time:4 },
+  { input:BLOCKS.GOLD_ORE, output:ITEMS_EXTRA.GOLD_INGOT, time:4 },
+  { input:BLOCKS.BRONZE_ORE, output:ITEMS_EXTRA.BRONZE_INGOT, time:3 },
+  { input:BLOCKS.TUNGSTEN_ORE, output:ITEMS_EXTRA.TUNGSTEN_INGOT, time:6 },
 ];
 const FUEL_ITEMS = {};
 FUEL_ITEMS[ITEMS_EXTRA.COAL] = 8;
@@ -2044,17 +2603,26 @@ function normalizeGrid(stacks,w,h){
   return {grid:out,w:nw,h:nh};
 }
 function matchRecipe(stacks,w,h){
-  const counts={};
-  for(const s of stacks){ if(s) counts[s.id]=(counts[s.id]||0)+s.count; }
-  const distinctIds = Object.keys(counts);
-  for(const r of RECIPES){
-    if(!r.shapeless) continue;
-    if(r.minGrid && (w<r.minGrid||h<r.minGrid)) continue;
-    if(distinctIds.length!==r.inputs.length) continue;
-    let ok=true;
-    for(const inp of r.inputs){ if((counts[inp.item]||0)<inp.count){ ok=false; break; } }
-    if(ok) return r;
-  }
+  // Shaped recipes are checked FIRST, before shapeless. A shaped match is
+  // always strictly more specific (exact bounding-box dimensions AND exact
+  // per-cell pattern, empty cells included) than a shapeless one (just "at
+  // least N of exactly one item type, arranged however"), so any grid that
+  // satisfies a shaped pattern deserves that more deliberate match over a
+  // coincidental shapeless one. This mirrors "most specific match wins" -
+  // and it's the fix for a bug class that bit this project repeatedly: a
+  // shaped recipe built purely from a single item type that's also a
+  // shapeless recipe's trigger (e.g. Boat's 5-plank vanilla shape sitting
+  // right on top of the 4-plank shapeless Crafting Table recipe) used to be
+  // silently unreachable, because shapeless-first only checks "at least N,
+  // one type" and would match before the shaped pattern ever got a look.
+  // Every recipe already in this file was designed around the OLD
+  // shapeless-first order, but none of them actually depend on it: every
+  // shaped recipe that shares a material with a shapeless trigger (door/bed/
+  // axe/hoe over Planks, etc.) was deliberately given a second ingredient
+  // (see their comments) specifically so it could never satisfy a shapeless
+  // check's "exactly one distinct item type" requirement in the first
+  // place - so re-ordering here is safe for all of them and only changes
+  // behavior for the new single-material Boat recipe below.
   const norm = normalizeGrid(stacks,w,h);
   if(norm){
     for(const r of RECIPES){
@@ -2072,6 +2640,17 @@ function matchRecipe(stacks,w,h){
       }
       if(ok) return r;
     }
+  }
+  const counts={};
+  for(const s of stacks){ if(s) counts[s.id]=(counts[s.id]||0)+s.count; }
+  const distinctIds = Object.keys(counts);
+  for(const r of RECIPES){
+    if(!r.shapeless) continue;
+    if(r.minGrid && (w<r.minGrid||h<r.minGrid)) continue;
+    if(distinctIds.length!==r.inputs.length) continue;
+    let ok=true;
+    for(const inp of r.inputs){ if((counts[inp.item]||0)<inp.count){ ok=false; break; } }
+    if(ok) return r;
   }
   return null;
 }
@@ -2138,12 +2717,56 @@ function updateFurnace(st,dt){
 }
 
 //////////////////////////////////////////////////////////////
+// FARMING - planted Wheat Seeds grow through 4 block-stage ids over time.
+// Tracked the same way as furnaceStates above: a Map from "x,y,z" to a
+// small state object, ticked every frame regardless of chunk-load distance
+// (same simplification updateAllFurnaces already makes). An entry that no
+// longer matches an in-progress crop stage (broken/replaced by the player,
+// or already fully grown) is dropped rather than kept around forever.
+//////////////////////////////////////////////////////////////
+const cropStates = new Map();
+const CROP_STAGE_BLOCKS = [BLOCKS.WHEAT_0, BLOCKS.WHEAT_1, BLOCKS.WHEAT_2, BLOCKS.WHEAT_3];
+const CROP_GROW_SECONDS = 45; // per stage - a bit over 2 minutes seed-to-harvest
+function cropKey(x,y,z){ return x+','+y+','+z; }
+function plantCrop(x,y,z){
+  World.set(x,y,z,BLOCKS.WHEAT_0);
+  cropStates.set(cropKey(x,y,z), {x,y,z,timer:0});
+}
+function updateAllCrops(dt){
+  if(!cropStates.size) return;
+  for(const [k, st] of cropStates){
+    const stage = CROP_STAGE_BLOCKS.indexOf(World.get(st.x,st.y,st.z));
+    if(stage<0){ cropStates.delete(k); continue; } // broken/replaced by the player
+    if(stage>=CROP_STAGE_BLOCKS.length-1){ cropStates.delete(k); continue; } // already mature
+    st.timer += dt;
+    if(st.timer>=CROP_GROW_SECONDS){
+      st.timer=0;
+      const nextStage = stage+1;
+      World.set(st.x,st.y,st.z,CROP_STAGE_BLOCKS[nextStage]);
+      // Stop tracking the instant it becomes mature, in this same tick,
+      // rather than waiting for a future tick to notice - nothing left to
+      // grow, so there's no reason to keep visiting this entry every frame.
+      if(nextStage>=CROP_STAGE_BLOCKS.length-1) cropStates.delete(k);
+    }
+  }
+}
+
+//////////////////////////////////////////////////////////////
 // GENERIC SLOT UI
 //////////////////////////////////////////////////////////////
 function arraySlotAccessor(arr,i){ return { get:()=>arr[i], set:v=>{arr[i]=v;} }; }
 
 let uiCursorStack = null;
 let lastMouseX=0, lastMouseY=0;
+// Hold-right-click-and-drag state: while true, entering a new slot spreads
+// one item from the cursor stack into it (vanilla Minecraft's spread
+// gesture). rightDragVisited tracks which slot elements this drag has
+// already placed into, so re-entering a slot doesn't double-place.
+let rightDragActive = false;
+let rightDragVisited = null;
+document.addEventListener('mouseup', e=>{
+  if(e.button===2){ rightDragActive=false; rightDragVisited=null; }
+});
 const heldCursorEl = document.getElementById('heldCursor');
 const tooltipEl = document.getElementById('tooltip');
 const PANEL_STATES = {inventory:true, crafting:true, furnace:true};
@@ -2234,19 +2857,54 @@ function onSlotRightClick(accessor, refreshFn){
       uiCursorStack = {id:cur.id, count:take, durability:cur.durability};
       accessor.set(remain>0 ? {id:cur.id, count:remain, durability:cur.durability} : null);
     }
-  } else if(!cur){
+    updateHeldCursorVisual(lastMouseX,lastMouseY);
+    refreshFn();
+  } else {
+    // Cursor already holds a stack: placing a single item is the same move
+    // whether it's one click or the first step of a drag, so share the logic.
+    spreadOneInto(accessor, refreshFn);
+  }
+}
+// Place a single item from the held cursor stack into this slot - the "one
+// step" of vanilla's right-click spread gesture. Shared by a lone right
+// click (onSlotRightClick above) and by hold-right-click-and-drag, which
+// calls this once per newly-entered slot. No-ops (returns false) on a
+// different item, a full stack, or an unstackable same-id item (e.g. two
+// tools) - matching vanilla, where only a left-click swaps those.
+function spreadOneInto(accessor, refreshFn){
+  if(!uiCursorStack) return false;
+  const cur = accessor.get();
+  if(!cur){
     const rest = uiCursorStack.count-1;
     accessor.set({id:uiCursorStack.id, count:1, durability:uiCursorStack.durability});
     uiCursorStack = rest>0 ? {id:uiCursorStack.id, count:rest, durability:uiCursorStack.durability} : null;
   } else if(cur.id===uiCursorStack.id && cur.count<itemStackSize(cur.id)){
     cur.count += 1; uiCursorStack.count -= 1;
     if(uiCursorStack.count<=0) uiCursorStack=null;
+  } else {
+    return false;
   }
-  // Different item, a full stack, or an unstackable same-id item (e.g. two
-  // tools): right-click placement no-ops here too, matching vanilla (only
-  // a left-click swaps those).
   updateHeldCursorVisual(lastMouseX,lastMouseY);
   refreshFn();
+  return true;
+}
+// mousedown fires before contextmenu for the right button, so this is where
+// the whole right-click gesture now starts (contextmenu below is left only
+// to suppress the browser's native menu, matching the pre-existing
+// preventDefault-only listener already used for the game canvas).
+// - Cursor empty: same single-click split-in-half pickup as always.
+// - Cursor already holding a stack (or just loaded one via the split
+//   above): place one item here, then arm drag-to-spread so continuing to
+//   hold the button and move the mouse places one item per newly-entered
+//   slot until it's released (handled by the mouseup listener above and the
+//   mouseenter check in wireSlotInteraction below).
+function beginRightDrag(el, accessor, refreshFn){
+  if(!uiCursorStack) onSlotRightClick(accessor, refreshFn);
+  else spreadOneInto(accessor, refreshFn);
+  if(uiCursorStack){
+    rightDragActive = true;
+    rightDragVisited = new Set([el]);
+  }
 }
 // Shift+click: send a whole stack to "the other" storage region in one
 // step - hotbar<->main inventory, or crafting/furnace slots straight back
@@ -2278,18 +2936,33 @@ function onSlotShiftClick(accessor, region, refreshFn){
   else if(region==='storage') moveStackAcross(accessor, player.hotbar, refreshFn);
   else moveStackToInventory(accessor, refreshFn); // crafting grid / furnace slots
 }
+// Wires the standard slot interaction set (left-click pick up/place/merge/
+// swap, shift-click quick-move, right-click split-or-place-one, and hold-
+// right-click-drag to spread) onto a single slot element. Shared by the
+// grid builder right below and by the furnace's individually-positioned
+// input/fuel slots, so every slot in the game behaves identically.
+function wireSlotInteraction(el, accessor, refreshFn, region){
+  el.addEventListener('click', (e)=>{
+    if(e.shiftKey) onSlotShiftClick(accessor, region, refreshFn);
+    else onSlotClick(accessor, refreshFn);
+  });
+  el.addEventListener('contextmenu', (e)=>{ e.preventDefault(); });
+  el.addEventListener('mousedown', (e)=>{ if(e.button===2) beginRightDrag(el, accessor, refreshFn); });
+  el.addEventListener('mouseenter', ()=>{
+    showTooltipFor(el, accessor.get());
+    if(rightDragActive && rightDragVisited && !rightDragVisited.has(el)){
+      rightDragVisited.add(el);
+      spreadOneInto(accessor, refreshFn);
+    }
+  });
+  el.addEventListener('mouseleave', hideTooltip);
+}
 function buildSlotsInto(containerEl, count, getAccessor, onChangeRefresh, region){
   containerEl.innerHTML='';
   const els=[];
   for(let i=0;i<count;i++){
     const el = createSlotEl();
-    el.addEventListener('click', (e)=>{
-      if(e.shiftKey) onSlotShiftClick(getAccessor(i), region, onChangeRefresh);
-      else onSlotClick(getAccessor(i), onChangeRefresh);
-    });
-    el.addEventListener('contextmenu', (e)=>{ e.preventDefault(); onSlotRightClick(getAccessor(i), onChangeRefresh); });
-    el.addEventListener('mouseenter', ()=>showTooltipFor(el, getAccessor(i).get()));
-    el.addEventListener('mouseleave', hideTooltip);
+    wireSlotInteraction(el, getAccessor(i), onChangeRefresh, region);
     containerEl.appendChild(el);
     els.push(el);
   }
@@ -2364,11 +3037,13 @@ function openInventory(){
   if(isPointerLocked()) document.exitPointerLock();
   const hotbarGridEl=document.getElementById('invMainGrid');
   const storageGridEl=document.getElementById('invStorageGrid');
+  const armorGridEl=document.getElementById('invArmorGrid');
   const craftGridEl=document.getElementById('invCraftGrid');
   const outputGridEl=document.getElementById('invCraftOutput');
   invRefs = {
     hotbar: buildSlotsInto(hotbarGridEl,9,i=>arraySlotAccessor(player.hotbar,i), refreshInventoryPanel, 'hotbar'),
     storage: buildSlotsInto(storageGridEl,18,i=>arraySlotAccessor(player.inventory,i), refreshInventoryPanel, 'storage'),
+    armor: buildSlotsInto(armorGridEl,4,i=>arraySlotAccessor(player.armor,i), refreshInventoryPanel, 'armor'),
     craft: buildSlotsInto(craftGridEl,4,i=>arraySlotAccessor(craftGrid2,i), refreshInventoryPanel, 'craft'),
   };
   outputGridEl.innerHTML='';
@@ -2389,6 +3064,7 @@ function refreshInventoryPanel(){
   if(!invRefs) return;
   refreshSlotsEls(invRefs.hotbar, i=>arraySlotAccessor(player.hotbar,i));
   refreshSlotsEls(invRefs.storage, i=>arraySlotAccessor(player.inventory,i));
+  refreshSlotsEls(invRefs.armor, i=>arraySlotAccessor(player.armor,i));
   refreshSlotsEls(invRefs.craft, i=>arraySlotAccessor(craftGrid2,i));
   const r = matchRecipe(craftGrid2,2,2);
   renderSlotEl(invRefs.output, r?{id:r.output.item,count:r.output.count}:null);
@@ -2483,23 +3159,11 @@ function openFurnacePanel(x,y,z){
   inputEl.innerHTML=''; fuelEl.innerHTML=''; outputEl.innerHTML='';
   const inAccessor = {get:()=>st.input,set:v=>{st.input=v;}};
   const inEl=createSlotEl();
-  inEl.addEventListener('click', (e)=>{
-    if(e.shiftKey) onSlotShiftClick(inAccessor, 'furnace', refreshFurnacePanel);
-    else onSlotClick(inAccessor, refreshFurnacePanel);
-  });
-  inEl.addEventListener('contextmenu', (e)=>{ e.preventDefault(); onSlotRightClick(inAccessor, refreshFurnacePanel); });
-  inEl.addEventListener('mouseenter', ()=>showTooltipFor(inEl, st.input));
-  inEl.addEventListener('mouseleave', hideTooltip);
+  wireSlotInteraction(inEl, inAccessor, refreshFurnacePanel, 'furnace');
   inputEl.appendChild(inEl);
   const fuelAccessor = {get:()=>st.fuel,set:v=>{st.fuel=v;}};
   const fuelSlotEl=createSlotEl();
-  fuelSlotEl.addEventListener('click', (e)=>{
-    if(e.shiftKey) onSlotShiftClick(fuelAccessor, 'furnace', refreshFurnacePanel);
-    else onSlotClick(fuelAccessor, refreshFurnacePanel);
-  });
-  fuelSlotEl.addEventListener('contextmenu', (e)=>{ e.preventDefault(); onSlotRightClick(fuelAccessor, refreshFurnacePanel); });
-  fuelSlotEl.addEventListener('mouseenter', ()=>showTooltipFor(fuelSlotEl, st.fuel));
-  fuelSlotEl.addEventListener('mouseleave', hideTooltip);
+  wireSlotInteraction(fuelSlotEl, fuelAccessor, refreshFurnacePanel, 'furnace');
   fuelEl.appendChild(fuelSlotEl);
   function takeFurnaceOutput(){
     if(st.output){
@@ -2604,10 +3268,91 @@ function flashHotbarLabel(){
 function hideDeathScreen(){ document.getElementById('deathScreen').classList.remove('active'); }
 function tryUseItem(stack){
   const idef = ItemDef[stack.id];
+  // Bow: fires regardless of currentTarget (see tryPlaceOrInteract) - always
+  // along the exact camera direction, same as melee's findTargetedMob cone
+  // but unconstrained by reach distance since the arrow travels on its own.
+  if(idef && idef.isBow){
+    if(player.mode!=='creative' && countItem(ITEMS_EXTRA.ARROW)<1){ showToast('No arrows'); return; }
+    if(player.mode!=='creative') removeItem(ITEMS_EXTRA.ARROW,1);
+    spawnArrow();
+    playSound('shoot');
+    if(stack.durability!=null){
+      stack.durability--;
+      if(stack.durability<=0) player.hotbar[player.selectedHotbar]=null;
+      refreshHotbarUI();
+    }
+    return;
+  }
+  // Hoe: right-click Grass/Dirt to till it into Farmland. Requires clear air
+  // above (same spirit as block placement needing an empty target cell) so
+  // you can't till something buried under another block.
+  if(idef && idef.tool && idef.tool.type==='hoe'){
+    if(!currentTarget) return;
+    const {x,y,z} = currentTarget;
+    const bId = World.get(x,y,z);
+    if(bId!==BLOCKS.GRASS && bId!==BLOCKS.DIRT) return;
+    if(World.get(x,y+1,z)!==BLOCKS.AIR) return;
+    World.set(x,y,z,BLOCKS.FARMLAND);
+    playSound('place');
+    if(stack.durability!=null){
+      stack.durability--;
+      if(stack.durability<=0) player.hotbar[player.selectedHotbar]=null;
+      refreshHotbarUI();
+    }
+    return;
+  }
+  // Wheat Seeds: right-click Farmland to plant. Targets the farmland cell
+  // itself (currentTarget.x/y/z) and plants into the cell directly above it,
+  // same face-adjacency idea as bucket-fill/block-placement but hardcoded to
+  // "up" since seeds only ever go on top of farmland, never sideways.
+  if(stack.id===ITEMS_EXTRA.WHEAT_SEEDS){
+    if(!currentTarget || World.get(currentTarget.x,currentTarget.y,currentTarget.z)!==BLOCKS.FARMLAND) return;
+    const ax=currentTarget.x, ay=currentTarget.y+1, az=currentTarget.z;
+    if(World.get(ax,ay,az)!==BLOCKS.AIR) return;
+    plantCrop(ax,ay,az);
+    stack.count--; if(stack.count<=0) player.hotbar[player.selectedHotbar]=null;
+    playSound('place');
+    refreshHotbarUI();
+    return;
+  }
   if(idef && idef.food){
     if(player.hunger>=player.maxHunger) return;
     player.hunger = Math.min(player.maxHunger, player.hunger+idef.food);
     stack.count--; if(stack.count<=0) player.hotbar[player.selectedHotbar]=null;
+    refreshHotbarUI();
+    return;
+  }
+  // Empty bucket + right-click a water block: collect it. Targets the
+  // looked-at block itself (currentTarget.x/y/z), same as mining does -
+  // not the face-adjacent cell placement uses.
+  if(stack.id===ITEMS_EXTRA.BUCKET){
+    if(!currentTarget || World.get(currentTarget.x,currentTarget.y,currentTarget.z)!==BLOCKS.WATER) return;
+    World.set(currentTarget.x,currentTarget.y,currentTarget.z,BLOCKS.AIR);
+    stack.count--; if(stack.count<=0) player.hotbar[player.selectedHotbar]=null;
+    // Simplification: the filled bucket lands in the general inventory
+    // rather than swapping into this exact hotbar slot, so a stack of
+    // several empty buckets doesn't need special-case splitting logic here.
+    const left = addItemToInventory(ITEMS_EXTRA.WATER_BUCKET, 1);
+    if(left>0) showToast('Inventory full - the water was lost');
+    playSound('place');
+    refreshHotbarUI();
+    return;
+  }
+  // Water bucket + right-click any block face: place a water block against
+  // it, exactly like placing a normal block (same face-adjacent target and
+  // guards), then empty the bucket back out.
+  if(stack.id===ITEMS_EXTRA.WATER_BUCKET){
+    if(!currentTarget) return;
+    const px=currentTarget.px, py=currentTarget.py, pz=currentTarget.pz;
+    if(py<0||py>=WORLD_HEIGHT) return;
+    if(!World.inBounds(px,py,pz)) return;
+    if(wouldPlaceInsidePlayer(px,py,pz)) return;
+    if(World.get(px,py,pz)!==BLOCKS.AIR) return;
+    World.set(px,py,pz,BLOCKS.WATER);
+    stack.count--; if(stack.count<=0) player.hotbar[player.selectedHotbar]=null;
+    const left = addItemToInventory(ITEMS_EXTRA.BUCKET, 1);
+    if(left>0) showToast('Inventory full - the empty bucket was lost');
+    playSound('place');
     refreshHotbarUI();
   }
 }
@@ -2620,8 +3365,25 @@ function flashDamageVignette(){
   el.classList.add('show');
   requestAnimationFrame(()=>{ requestAnimationFrame(()=>{ el.classList.remove('show'); }); });
 }
+// Sum of the `defense` value on every equipped piece that's actually a
+// recognized armor item (see the ItemDef.armor comment above).
+function armorDefenseTotal(){
+  let total=0;
+  for(const piece of player.armor){
+    if(piece){ const d=ItemDef[piece.id]; if(d&&d.armor) total+=d.armor.defense; }
+  }
+  return total;
+}
 function damagePlayer(amount, source){
   if(player.dead || player.mode==='creative') return;
+  // Armor only mitigates combat damage - matches the intuitive "armor
+  // protects you in a fight" expectation. Fall and starvation damage are
+  // deliberately left unmitigated (simplification: vanilla does reduce fall
+  // damage somewhat via armor toughness too, skipped here for simplicity).
+  if(source==='mob'){
+    const reduction = Math.min(0.8, armorDefenseTotal()*0.04);
+    amount = Math.max(0, Math.round(amount*(1-reduction)));
+  }
   player.health = Math.max(0, player.health-amount);
   flashDamageVignette();
   playSound('damage');
@@ -2701,6 +3463,10 @@ const MOB_STATS = {
   rabbit:  { health:3, speed:2.0, bodyColor:0xe8e4da, headColor:0xf5f0e8, legColor:0xd8d2c4, scale:0.6, passive:true, flees:true },
   hostile: { health:10, chaseSpeed:1.8, wanderSpeed:0.8, bodyColor:0x3a4a3a, headColor:0x2e3a2e, legColor:0x232b23, eyeColor:0xff3030, scale:1, passive:false },
   spider:  { health:8, chaseSpeed:2.6, wanderSpeed:1.2, bodyColor:0x18181c, headColor:0x101013, legColor:0x0c0c0e, eyeColor:0xb030ff, scale:1, passive:false },
+  // lootExtra: dropped IN ADDITION to the generic passive raw-food drop
+  // below (matches vanilla chickens dropping both raw chicken and
+  // feathers) - min/max are read in attackMob's death branch.
+  chicken: { health:4, speed:1.3, bodyColor:0xf2ede0, headColor:0xf5f0e8, legColor:0xe8b23a, scale:0.65, passive:true, lootExtra:{item:ITEMS_EXTRA.FEATHER, min:1, max:2} },
 };
 
 function createMobMesh(kind){
@@ -2835,7 +3601,8 @@ function trySpawnMob(isNight){
     if(Math.random()<0.55) return;
     kind = Math.random()<0.35 ? 'spider' : 'hostile';
   } else {
-    kind = Math.random()<0.3 ? 'rabbit' : 'critter';
+    const roll = Math.random();
+    kind = roll<0.25 ? 'rabbit' : (roll<0.5 ? 'chicken' : 'critter');
   }
   for(let attempt=0; attempt<6; attempt++){
     const ang=Math.random()*Math.PI*2, dist=10+Math.random()*14;
@@ -2891,7 +3658,10 @@ function attackMob(m){
   const heldSlot = player.hotbar[player.selectedHotbar];
   const heldDef = heldSlot ? ItemDef[heldSlot.id] : null;
   let dmg=1;
-  if(heldDef && heldDef.tool && heldDef.tool.type==='sword'){
+  // Axes double as a weapon (slightly harder-hitting than a sword of the
+  // same tier, matching vanilla's flavor) even though their main purpose is
+  // chopping wood faster - see the axeBonus check in miningSecondsFor.
+  if(heldDef && heldDef.tool && (heldDef.tool.type==='sword' || heldDef.tool.type==='axe')){
     dmg = heldDef.damage||3;
     if(heldSlot.durability!=null){
       heldSlot.durability--;
@@ -2899,6 +3669,13 @@ function attackMob(m){
       refreshHotbarUI();
     }
   }
+  damageMob(m, dmg);
+}
+// Shared damage-application path for anything that can hurt a mob - melee
+// (attackMob, above) and arrows (updateArrows, below) both funnel here so
+// knockback/death/loot/sound behave identically regardless of the source.
+function damageMob(m, dmg){
+  if(m.dead) return;
   m.health -= dmg;
   m.hitFlash = 0.15;
   const kx=m.pos.x-player.pos.x, kz=m.pos.z-player.pos.z;
@@ -2911,6 +3688,10 @@ function attackMob(m){
     const stats = MOB_STATS[m.kind] || MOB_STATS.critter;
     if(stats.passive) spawnItemEntity(m.pos.x, m.pos.y+0.3, m.pos.z, ITEMS_EXTRA.RAW_FOOD, 1+Math.floor(Math.random()*2));
     else if(Math.random()<0.5) spawnItemEntity(m.pos.x, m.pos.y+0.3, m.pos.z, ITEMS_EXTRA.STICK, 1);
+    if(stats.lootExtra){
+      const n = stats.lootExtra.min + Math.floor(Math.random()*(stats.lootExtra.max-stats.lootExtra.min+1));
+      spawnItemEntity(m.pos.x, m.pos.y+0.35, m.pos.z, stats.lootExtra.item, n);
+    }
     playSound('hurt');
   } else {
     playSound('hit');
@@ -2943,6 +3724,7 @@ const SOUND_DEFS = {
   bed:    { freq:260, to:440, type:'sine',     dur:0.30, vol:0.10 },
   jump:   { freq:300, to:380, type:'square',   dur:0.07, vol:0.08 },
   damage: { freq:100, to:50,  type:'sawtooth', dur:0.15, vol:0.15 },
+  shoot:  { freq:400, to:700, type:'triangle', dur:0.10, vol:0.10 },
 };
 function playSound(name){
   const ctx = ensureAudio();
@@ -3073,6 +3855,84 @@ function updateItemEntities(dt){
           refreshHotbarUI();
         }
       }
+    }
+  }
+}
+
+//////////////////////////////////////////////////////////////
+// ARROW PROJECTILES - fired by the bow. Mirrors itemEntities' mesh/pos/vel
+// physics-entity pattern above, but flies in a straight-ish line (lighter
+// gravity than a dropped item, no floor-snap/pickup) and dies on the first
+// block or mob it touches rather than settling to rest.
+//////////////////////////////////////////////////////////////
+const arrowEntities = [];
+const ARROW_SPEED = 26;
+const ARROW_GRAVITY_SCALE = 0.25; // a flatter, faster arc than a dropped item's tumble
+const ARROW_DAMAGE = 4;
+const ARROW_MAX_AGE = 6;
+const ARROW_HIT_RADIUS = 0.55;
+// Squared distance from point P to the closest point on segment A-B. Used to
+// test a mob against an arrow's whole per-frame travel path rather than just
+// its landing point - at ARROW_SPEED a single frame can cover more than a
+// mob's hitbox width, so an endpoint-only check would let arrows tunnel
+// straight through mobs between frames (the same class of bug the
+// raycastVoxel sweep above already guards against for blocks).
+function pointSegmentDistSq(px,py,pz, ax,ay,az, bx,by,bz){
+  const abx=bx-ax, aby=by-ay, abz=bz-az;
+  const abLenSq = abx*abx+aby*aby+abz*abz;
+  let t = abLenSq>1e-9 ? ((px-ax)*abx+(py-ay)*aby+(pz-az)*abz)/abLenSq : 0;
+  t = Math.max(0, Math.min(1, t));
+  const cx=ax+abx*t, cy=ay+aby*t, cz=az+abz*t;
+  const dx=px-cx, dy=py-cy, dz=pz-cz;
+  return dx*dx+dy*dy+dz*dz;
+}
+function spawnArrow(){
+  if(!scene) return;
+  const dir = new THREE.Vector3(); camera.getWorldDirection(dir);
+  // Start a little in front of the camera so the arrow doesn't immediately
+  // self-collide with whatever block the player is standing against.
+  const origin = new THREE.Vector3(camera.position.x, camera.position.y, camera.position.z).addScaledVector(dir, 0.5);
+  const geo = new THREE.BoxGeometry(0.08,0.08,0.5);
+  const mat = new THREE.MeshLambertMaterial({ color:0x8a6a3f });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.copy(origin);
+  scene.add(mesh);
+  arrowEntities.push({ mesh, pos:origin.clone(), vel:dir.clone().multiplyScalar(ARROW_SPEED), age:0 });
+}
+function removeArrow(i){
+  const a = arrowEntities[i];
+  scene.remove(a.mesh); a.mesh.geometry.dispose(); a.mesh.material.dispose();
+  arrowEntities.splice(i,1);
+}
+function updateArrows(dt){
+  if(!arrowEntities.length) return;
+  for(let i=arrowEntities.length-1;i>=0;i--){
+    const a = arrowEntities[i];
+    a.age += dt;
+    if(a.age>ARROW_MAX_AGE){ removeArrow(i); continue; }
+    a.vel.y += GRAVITY*dt*ARROW_GRAVITY_SCALE;
+    const step = a.vel.clone().multiplyScalar(dt);
+    const stepLen = step.length();
+    if(stepLen>0.0001){
+      // Sweep this frame's whole travel distance through raycastVoxel rather
+      // than just checking the landing cell, so a fast arrow can't tunnel
+      // through a thin (1-block) wall between two frames.
+      const dirN = step.clone().normalize();
+      if(raycastVoxel(a.pos, dirN, stepLen)){ removeArrow(i); continue; }
+    }
+    const newPos = a.pos.clone().add(step);
+    let hitMob=null;
+    for(const m of mobs){
+      if(m.dead) continue;
+      const distSq = pointSegmentDistSq(m.pos.x, m.pos.y+0.5, m.pos.z, a.pos.x,a.pos.y,a.pos.z, newPos.x,newPos.y,newPos.z);
+      if(distSq < ARROW_HIT_RADIUS*ARROW_HIT_RADIUS){ hitMob=m; break; }
+    }
+    a.pos.copy(newPos);
+    a.mesh.position.copy(a.pos);
+    if(a.vel.lengthSq()>0.0001) a.mesh.lookAt(a.pos.clone().add(a.vel));
+    if(hitMob){
+      damageMob(hitMob, ARROW_DAMAGE);
+      removeArrow(i);
     }
   }
 }
@@ -3233,6 +4093,8 @@ function gameLoop(nowMs){
     updateSurvivalStats(dt);
     updateMobs(dt, isNightTime());
     updateItemEntities(dt);
+    updateArrows(dt);
+    updateAllCrops(dt);
     updateMusic(dt);
     waterAnimAcc += dt;
     if(waterAnimAcc>0.08){ animateWaterTexture(waterAnimAcc); waterAnimAcc=0; }
