@@ -428,7 +428,8 @@ const BLOCKS = {
   PLANKS:8, COAL_ORE:9, IRON_ORE:10, GLASS:11, CRAFTING_TABLE:12, FURNACE:13,
   COBBLESTONE:25, BRICKS:26, BEDROCK:27, DOOR:28, BED:29, DOOR_OPEN:30,
   GOLD_ORE:36, BRONZE_ORE:37, DIAMOND_ORE:38, EMERALD_ORE:39, RUBY_ORE:40, TUNGSTEN_ORE:41,
-  FARMLAND:71, WHEAT_0:72, WHEAT_1:73, WHEAT_2:74, WHEAT_3:75, BOAT:82
+  FARMLAND:71, WHEAT_0:72, WHEAT_1:73, WHEAT_2:74, WHEAT_3:75, BOAT:82, WOOL_BLOCK:90,
+  SCORCHSTONE:91, LAVA:92, VOIDSTONE:94
 };
 const ITEMS_EXTRA = {
   STICK:14, COAL:15, IRON_INGOT:16,
@@ -446,7 +447,10 @@ const ITEMS_EXTRA = {
   IRON_HELMET:60, IRON_CHESTPLATE:61, IRON_LEGGINGS:62, IRON_BOOTS:63,
   DIAMOND_HELMET:64, DIAMOND_CHESTPLATE:65, DIAMOND_LEGGINGS:66, DIAMOND_BOOTS:67,
   FEATHER:68, BOW:69, ARROW:70,
-  HOE_WOOD:76, HOE_STONE:77, HOE_IRON:78, WHEAT_SEEDS:79, WHEAT:80, BREAD:81
+  HOE_WOOD:76, HOE_STONE:77, HOE_IRON:78, WHEAT_SEEDS:79, WHEAT:80, BREAD:81,
+  SHEARS:83, WOOL:84, LEATHER:85,
+  LEATHER_HELMET:86, LEATHER_CHESTPLATE:87, LEATHER_LEGGINGS:88, LEATHER_BOOTS:89,
+  RIFT_SHARD:93
 };
 
 //////////////////////////////////////////////////////////////
@@ -555,6 +559,31 @@ BlockDef[BLOCKS.WHEAT_3] = { name:'Wheat Crop', solid:true, opaque:false, hardne
 // implementing full rowing/steering was out of scope here.
 BlockDef[BLOCKS.BOAT] = { name:'Boat', solid:true, opaque:false, hardness:0.6, tool:null, tier:0,
   drop:BLOCKS.BOAT, faces:{all:'boat'} };
+// Wool Block: a placeable decorative use for the Wool item sheep drop (see
+// RECIPES' 'wool_block' entry) - breaks fast and by hand like planks, drops
+// itself when mined (same self-drop pattern as planks/bricks/boat above).
+BlockDef[BLOCKS.WOOL_BLOCK] = { name:'Wool Block', solid:true, opaque:true, hardness:0.7, tool:null, tier:0,
+  drop:BLOCKS.WOOL_BLOCK, faces:{all:'wool'} };
+// The Ashlands' native terrain block (see the DIMENSIONS registry below) -
+// mined/tiered exactly like Stone, just a distinct scorched palette.
+BlockDef[BLOCKS.SCORCHSTONE] = { name:'Scorchstone', solid:true, opaque:true, hardness:1.4, tool:'pickaxe', tier:TOOL_TIER.WOOD,
+  drop:BLOCKS.SCORCHSTONE, faces:{all:'scorchstone'} };
+// Lava: the Ashlands' hazard liquid, filling low ground the way Water fills
+// the Overworld's. Deliberately mirrors Water's definition exactly
+// (solid:true) rather than adding new liquid/damage physics - this engine
+// has no swim-through-liquid collision for ANY block yet (see Water's own
+// precedent and the Wheat comment above), so Lava is a walkable-on-top
+// hazard-flavored surface, not a burn-damage mechanic. That's a deliberate
+// scope simplification for this first realm, not an oversight.
+BlockDef[BLOCKS.LAVA] = { name:'Lava', solid:true, opaque:false, hardness:9999, tool:null, tier:0,
+  drop:null, faces:{all:'lava'} };
+// The Voidreach's native terrain block (see the DIMENSIONS registry below) -
+// mined/tiered exactly like Stone/Scorchstone, just a distinct pale palette.
+// Unlike the Overworld/Ashlands, this realm has no hazard LIQUID at all -
+// its floating islands simply have nothing below them (see
+// generateVoidreachChunkData) - so there's no Lava-style third BlockDef here.
+BlockDef[BLOCKS.VOIDSTONE] = { name:'Voidstone', solid:true, opaque:true, hardness:1.5, tool:'pickaxe', tier:TOOL_TIER.WOOD,
+  drop:BLOCKS.VOIDSTONE, faces:{all:'voidstone'} };
 
 const ItemDef = {};
 for(const idStr in BlockDef){
@@ -604,11 +633,19 @@ ItemDef[ITEMS_EXTRA.AXE_DIAMOND] = { name:'Diamond Axe', stack:1, icon:'axe_diam
 ItemDef[ITEMS_EXTRA.PICK_TUNGSTEN] = { name:'Tungsten Pickaxe', stack:1, icon:'pick_tungsten', tool:{type:'pickaxe',tier:TOOL_TIER.TUNGSTEN}, durability:700 };
 ItemDef[ITEMS_EXTRA.SWORD_TUNGSTEN] = { name:'Tungsten Sword', stack:1, icon:'sword_tungsten', tool:{type:'sword',tier:TOOL_TIER.TUNGSTEN}, damage:9, durability:700 };
 ItemDef[ITEMS_EXTRA.AXE_TUNGSTEN] = { name:'Tungsten Axe', stack:1, icon:'axe_tungsten', tool:{type:'axe',tier:TOOL_TIER.TUNGSTEN}, damage:10, durability:700 };
-// Armor: two tiers (iron/diamond) rather than one per material - a stated
-// simplification, same spirit as bronze reusing iron's tool tier above.
+// Armor: three tiers (leather/iron/diamond) rather than one per material -
+// a stated simplification, same spirit as bronze reusing iron's tool tier
+// above. Leather is a 3rd, weakest, entry-level tier below iron rather than
+// a 7th ore/gem tier - it's sourced from a mob drop (cows), not mined, so
+// it doesn't reopen the "one tier per mineable material" question the
+// iron/diamond-only decision was about.
 // `armor.slot` names the intended equip slot; the 4 equip slots in the
 // inventory panel don't currently enforce it (see armorSlotAccessor), so
 // this is read only by armorDefenseTotal() when summing worn defense.
+ItemDef[ITEMS_EXTRA.LEATHER_HELMET] = { name:'Leather Cap', stack:1, icon:'leather_helmet', armor:{slot:'head', defense:1} };
+ItemDef[ITEMS_EXTRA.LEATHER_CHESTPLATE] = { name:'Leather Tunic', stack:1, icon:'leather_chestplate', armor:{slot:'chest', defense:3} };
+ItemDef[ITEMS_EXTRA.LEATHER_LEGGINGS] = { name:'Leather Pants', stack:1, icon:'leather_leggings', armor:{slot:'legs', defense:2} };
+ItemDef[ITEMS_EXTRA.LEATHER_BOOTS] = { name:'Leather Boots', stack:1, icon:'leather_boots', armor:{slot:'feet', defense:1} };
 ItemDef[ITEMS_EXTRA.IRON_HELMET] = { name:'Iron Helmet', stack:1, icon:'iron_helmet', armor:{slot:'head', defense:2} };
 ItemDef[ITEMS_EXTRA.IRON_CHESTPLATE] = { name:'Iron Chestplate', stack:1, icon:'iron_chestplate', armor:{slot:'chest', defense:6} };
 ItemDef[ITEMS_EXTRA.IRON_LEGGINGS] = { name:'Iron Leggings', stack:1, icon:'iron_leggings', armor:{slot:'legs', defense:5} };
@@ -633,6 +670,15 @@ ItemDef[ITEMS_EXTRA.WHEAT_SEEDS] = { name:'Wheat Seeds', stack:64, icon:'wheat_s
 // farming/crafting ingredient.
 ItemDef[ITEMS_EXTRA.WHEAT] = { name:'Wheat', stack:64, icon:'wheat' };
 ItemDef[ITEMS_EXTRA.BREAD] = { name:'Bread', stack:16, icon:'bread', food:6 };
+// Shears: a utility tool type of its own (not pickaxe/axe/sword/hoe) - only
+// meaningful use right now is shearing a shearable mob (see tryShearMob).
+ItemDef[ITEMS_EXTRA.SHEARS] = { name:'Shears', stack:1, icon:'shears', tool:{type:'shears'}, durability:100 };
+ItemDef[ITEMS_EXTRA.WOOL] = { name:'Wool', stack:64, icon:'wool' };
+ItemDef[ITEMS_EXTRA.LEATHER] = { name:'Leather', stack:64, icon:'leather' };
+// Rift Shard: a reusable travel key (see tryUseItem/switchDimension below) -
+// not a tool and not consumed on use, so no `tool`/`durability` fields.
+// stack:1 matches Water Bucket's precedent for a single functional item.
+ItemDef[ITEMS_EXTRA.RIFT_SHARD] = { name:'Rift Shard', stack:1, icon:'rift_shard' };
 
 function itemName(id){ return (ItemDef[id]&&ItemDef[id].name) || '?'; }
 function itemStackSize(id){ return (ItemDef[id]&&ItemDef[id].stack) || 64; }
@@ -643,8 +689,13 @@ function itemStackSize(id){ return (ItemDef[id]&&ItemDef[id].stack) || 64; }
 // so any chunk can be created independently, in any order, and
 // still stitch together seamlessly with its neighbors.
 //////////////////////////////////////////////////////////////
-const chunkStore = new Map(); // "cx,cz" -> {blocks:Uint8Array, heightMap:Int16Array, decorated:bool}
-function chunkDataKey(cx,cz){ return cx+','+cz; }
+// Keyed by BOTH currentDimension and "cx,cz" (see the DIMENSIONS registry
+// below) so the Overworld and any other realm never collide even though
+// they reuse the exact same numeric chunk-coordinate range - each
+// dimension's terrain lives in a fully separate namespace within this one
+// shared Map.
+const chunkStore = new Map(); // "dim:cx,cz" -> {blocks:Uint8Array, heightMap:Int16Array, decorated:bool}
+function chunkDataKey(cx,cz){ return currentDimension+':'+cx+','+cz; }
 
 function computeTerrainHeight(x,z){
   const n = fbm2(x*0.045+1000, z*0.045+1000, 4, 2.05, 0.52);
@@ -658,7 +709,7 @@ function computeTerrainHeight(x,z){
   return Math.max(BEDROCK_LAYERS+2, Math.min(WORLD_HEIGHT-10, height));
 }
 
-function generateChunkData(cx,cz){
+function generateOverworldChunkData(cx,cz){
   const blocks = new Uint8Array(CHUNK_SIZE*WORLD_HEIGHT*CHUNK_SIZE);
   const heightMap = new Int16Array(CHUNK_SIZE*CHUNK_SIZE);
   const bx0=cx*CHUNK_SIZE, bz0=cz*CHUNK_SIZE;
@@ -701,6 +752,167 @@ function generateChunkData(cx,cz){
   }
   return {blocks, heightMap, decorated:false};
 }
+// The Ashlands: a barren, lava-scarred "other realm" reached via a Rift
+// Shard (see RECIPES/tryUseItem/switchDimension). Harsher/more jagged than
+// the Overworld's rolling-hills shape - higher-frequency, higher-amplitude
+// noise for a broken wasteland silhouette - using different noise-space
+// offsets (9000s/13000s instead of computeTerrainHeight's 1000s/4000s/500s)
+// so it isn't a spatially-correlated reskin of the Overworld's own shape.
+function computeAshlandsTerrainHeight(x,z){
+  const n = fbm2(x*0.07+9000, z*0.07+9000, 4, 2.2, 0.55);
+  const n2 = fbm2(x*0.02+13000, z*0.02+13000, 3, 2.1, 0.5);
+  const h = n*0.6 + n2*0.4;
+  let height = 10 + Math.round(h*34);
+  return Math.max(BEDROCK_LAYERS+2, Math.min(WORLD_HEIGHT-10, height));
+}
+const ASHLANDS_LAVA_LEVEL = 16; // this realm's sea-level equivalent - low ground floods with Lava instead of Water
+function generateAshlandsChunkData(cx,cz){
+  const blocks = new Uint8Array(CHUNK_SIZE*WORLD_HEIGHT*CHUNK_SIZE);
+  const heightMap = new Int16Array(CHUNK_SIZE*CHUNK_SIZE);
+  const bx0=cx*CHUNK_SIZE, bz0=cz*CHUNK_SIZE;
+  for(let lz=0; lz<CHUNK_SIZE; lz++){
+    for(let lx=0; lx<CHUNK_SIZE; lx++){
+      const x=bx0+lx, z=bz0+lz;
+      const height = computeAshlandsTerrainHeight(x,z);
+      heightMap[lz*CHUNK_SIZE+lx] = height;
+      for(let y=0; y<WORLD_HEIGHT; y++){
+        let id = BLOCKS.AIR;
+        if(y < BEDROCK_LAYERS){
+          id = BLOCKS.BEDROCK;
+        } else if(y < height){
+          id = BLOCKS.SCORCHSTONE;
+          // Reuses the Overworld's exact ore-band r-thresholds/depths (see
+          // generateOverworldChunkData above) so the Ashlands is a genuine
+          // mining incentive and not just scenery - same ore ids and
+          // rarity, just embedded in Scorchstone instead of Stone.
+          const r = hash3(x,y,z);
+          if(y<6 && r<0.005) id = BLOCKS.TUNGSTEN_ORE;
+          else if(y<9 && r<0.014) id = BLOCKS.IRON_ORE;
+          else if(y<10 && r<0.018) id = BLOCKS.DIAMOND_ORE;
+          else if(y<16 && r<0.026) id = BLOCKS.GOLD_ORE;
+          else if(y<18 && r<0.032) id = BLOCKS.EMERALD_ORE;
+          else if(y<24 && r<0.038) id = BLOCKS.RUBY_ORE;
+          else if(r<0.045) id = BLOCKS.COAL_ORE;
+          else if(r<0.060) id = BLOCKS.BRONZE_ORE;
+        } else if(y < ASHLANDS_LAVA_LEVEL){
+          id = BLOCKS.LAVA;
+        }
+        if(id!==BLOCKS.AIR) blocks[(y*CHUNK_SIZE*CHUNK_SIZE)+(lz*CHUNK_SIZE)+lx] = id;
+      }
+    }
+  }
+  return {blocks, heightMap, decorated:false};
+}
+// The Voidreach: a second "other realm" (see the DIMENSIONS registry below),
+// deliberately unlike the Ashlands - instead of contiguous terrain with only
+// its surface height varying, a column here is binary: either part of a
+// floating island (solid from that island's own floor up to its own noise-
+// varied top) or void (no blocks at all, all the way down). Falling through
+// a void column eventually crosses the Overworld's own existing generic
+// "p.pos.y < -24" death threshold (see updatePlayerPhysics) - reused as-is,
+// completely unmodified, for a genuine void-kills-you hazard with zero new
+// physics code, exactly the same simplification-through-reuse this
+// dimension architecture was built for (see LAVA's comment above for the
+// Ashlands' equivalent reuse).
+function voidreachIslandNoise(x,z){ return fbm2(x*0.045+30000, z*0.045+30000, 4, 2.05, 0.52); }
+// fbm2 (see its own definition) is a weighted average of [0,1)-ranged value
+// noise, NOT a signed [-1,1] noise - empirically its output over a broad
+// sample is roughly symmetric around 0.5 (min ~0.06, median ~0.50, max
+// ~0.95), so the threshold is centered near there too rather than near 0.
+// 0.45 (just under the median) biases the split toward somewhat more island
+// than void (~60/40) - enough void to feel genuinely hazardous without
+// making the realm frustrating to cross on foot.
+const VOIDREACH_VOID_THRESHOLD = 0.45;
+const VOIDREACH_ISLAND_FLOOR = 34; // islands float - nothing solid below this Y at all, not even bedrock
+function isVoidreachIsland(x,z){
+  // A guaranteed island under/around world origin (0,0) - the landing spot
+  // findSafeLandingSpot(0,0) always uses on a realm's first-ever visit (see
+  // switchDimension) - so stepping into this realm for the first time can
+  // never drop the player straight into the void before they've even seen
+  // solid ground. Everywhere else, the noise decides.
+  if(x*x+z*z < 100) return true;
+  return voidreachIslandNoise(x,z) > VOIDREACH_VOID_THRESHOLD;
+}
+function computeVoidreachTerrainHeight(x,z){
+  // Only meaningful for island columns (used by findSafeLandingSpot, always
+  // called at the guaranteed-island spawn, and by generateVoidreachChunkData
+  // below for that island's own top surface).
+  const n = fbm2(x*0.08+34000, z*0.08+34000, 3, 2.15, 0.5);
+  return VOIDREACH_ISLAND_FLOOR + 6 + Math.round(Math.max(0,n)*16);
+}
+function generateVoidreachChunkData(cx,cz){
+  const blocks = new Uint8Array(CHUNK_SIZE*WORLD_HEIGHT*CHUNK_SIZE);
+  const heightMap = new Int16Array(CHUNK_SIZE*CHUNK_SIZE);
+  const bx0=cx*CHUNK_SIZE, bz0=cz*CHUNK_SIZE;
+  for(let lz=0; lz<CHUNK_SIZE; lz++){
+    for(let lx=0; lx<CHUNK_SIZE; lx++){
+      const x=bx0+lx, z=bz0+lz;
+      if(isVoidreachIsland(x,z)){
+        const top = computeVoidreachTerrainHeight(x,z);
+        heightMap[lz*CHUNK_SIZE+lx] = top;
+        for(let y=VOIDREACH_ISLAND_FLOOR; y<top; y++){
+          let id = BLOCKS.VOIDSTONE;
+          // Same ore-band r-thresholds/depths as every other realm's stone-
+          // equivalent (see generateOverworldChunkData/generateAshlandsChunkData) -
+          // measured from THIS island's own floor rather than from y=0, since
+          // that's the only "depth" that means anything for a floating mass.
+          const depth = y-VOIDREACH_ISLAND_FLOOR;
+          const r = hash3(x,y,z);
+          if(depth<6 && r<0.005) id = BLOCKS.TUNGSTEN_ORE;
+          else if(depth<9 && r<0.014) id = BLOCKS.IRON_ORE;
+          else if(depth<10 && r<0.018) id = BLOCKS.DIAMOND_ORE;
+          else if(depth<16 && r<0.026) id = BLOCKS.GOLD_ORE;
+          else if(depth<18 && r<0.032) id = BLOCKS.EMERALD_ORE;
+          else if(depth<24 && r<0.038) id = BLOCKS.RUBY_ORE;
+          else if(r<0.045) id = BLOCKS.COAL_ORE;
+          else if(r<0.060) id = BLOCKS.BRONZE_ORE;
+          blocks[(y*CHUNK_SIZE*CHUNK_SIZE)+(lz*CHUNK_SIZE)+lx] = id;
+        }
+      } else {
+        // Void column - heightMap 0 reads as "no ground" wherever surfaceY
+        // is consulted (see trySpawnMob's y<1 guard); blocks stays all-AIR
+        // (Uint8Array default), all the way from y=0 to WORLD_HEIGHT.
+        heightMap[lz*CHUNK_SIZE+lx] = 0;
+      }
+    }
+  }
+  return {blocks, heightMap, decorated:false};
+}
+// Which "realm" is currently simulating/rendering. Only one is ever active
+// at a time (see switchDimension) - World.get/set/setRaw/surfaceY,
+// chunkDataKey, and generateChunkData below all read this implicitly rather
+// than threading a dimension parameter through every call site (of which
+// there are hundreds throughout this file), the same way player.mode is
+// already an implicit global rather than a threaded parameter.
+let currentDimension = 'overworld';
+// Registry of realms: genFn creates a chunk's block data, heightFn is the
+// pure (x,z)->surface-height function used for suitability checks and safe-
+// landing-spot searches (see findSafeLandingSpot), hasDayNight gates
+// updateDayNight's sun/moon/clock simulation (see updateNonOverworldAtmosphere
+// for realms where it's false), and skyColor/ambientIntensity/hemiIntensity
+// are that fixed atmosphere. displayName is used in the travel toast.
+const DIMENSIONS = {
+  overworld: {
+    genFn: generateOverworldChunkData, heightFn: computeTerrainHeight,
+    hasDayNight: true, displayName: 'the Overworld',
+  },
+  ashlands: {
+    genFn: generateAshlandsChunkData, heightFn: computeAshlandsTerrainHeight,
+    hasDayNight: false, skyColor: 0x3a140a, ambientIntensity: 0.5, hemiIntensity: 0.25,
+    displayName: 'the Ashlands',
+  },
+  voidreach: {
+    genFn: generateVoidreachChunkData, heightFn: computeVoidreachTerrainHeight,
+    hasDayNight: false, skyColor: 0x140a24, ambientIntensity: 0.35, hemiIntensity: 0.18,
+    displayName: 'the Voidreach',
+  },
+};
+function generateChunkData(cx,cz){ return DIMENSIONS[currentDimension].genFn(cx,cz); }
+// The fixed order a Rift Shard cycles through (see tryUseItem) - Overworld
+// -> Ashlands -> Voidreach -> back to Overworld, one realm per use. A plain
+// array (not e.g. alternating pairs) so adding a fourth realm later is just
+// one more entry here, not a new branch of travel-item logic.
+const DIMENSION_CYCLE = ['overworld','ashlands','voidreach'];
 function getOrCreateChunkData(cx,cz){
   const key = chunkDataKey(cx,cz);
   let c = chunkStore.get(key);
@@ -746,11 +958,13 @@ const World = {
 };
 function computeSpawnPoint(){
   const sx=0, sz=0;
-  // Force the spawn chunk's decoration (tree placement) to run now, before
-  // we pick a spawn Y, so a tree at/near (0,0) can't leave the spawn point
-  // buried in leaves/logs - decorating is idempotent (guarded by
-  // chunk.decorated) so this doesn't double-plant anything later.
+  // Force the spawn chunk's decoration (tree + structure placement) to run
+  // now, before we pick a spawn Y, so a tree - or a watchtower wall - at/
+  // near (0,0) can't leave the spawn point buried - decorating is
+  // idempotent (guarded by chunk.decorated / placedStructureOrigins) so
+  // this doesn't double-plant/double-build anything later.
   maybeDecorateChunk(Math.floor(sx/CHUNK_SIZE), Math.floor(sz/CHUNK_SIZE));
+  maybeDecorateStructures(Math.floor(sx/CHUNK_SIZE), Math.floor(sz/CHUNK_SIZE));
   let y = computeTerrainHeight(sx,sz)+2;
   const yMax = WORLD_HEIGHT-2;
   while(y<yMax && (World.get(sx,y,sz)!==BLOCKS.AIR || World.get(sx,y+1,sz)!==BLOCKS.AIR)) y++;
@@ -831,16 +1045,215 @@ function maybeDecorateChunk(cx,cz){
     }
   }
 }
+
+//////////////////////////////////////////////////////////////
+// STRUCTURES — sparse procedural landmarks (currently just watchtowers;
+// see STRUCTURES_TODO below for what's next). Placement uses a REGION GRID
+// rather than trees' per-column local-maximum scan: structures need much
+// larger separation than trees, and a local-maximum search wide enough to
+// guarantee that separation would mean re-hashing thousands of neighbor
+// columns for every candidate, for every column of every chunk's
+// decoration scan. A region grid is O(1) per region instead - divide the
+// world into fixed STRUCTURE_REGION_SIZE cells, and each region
+// independently rolls at most one candidate site, jittered to a
+// pseudo-random position within its own cell. Two adjacent regions can
+// still each roll a candidate near their shared edge, but never closer
+// than roughly one region's width apart.
+//////////////////////////////////////////////////////////////
+const STRUCTURE_REGION_SIZE = 48;
+const STRUCTURE_RARITY = 0.22; // fraction of regions that roll a candidate site at all
+function structureRegionCandidate(rx,rz){
+  // Distinct salts (and a distinct hash2 "channel" per roll) from
+  // treeHashScore's 13/3/17/9 so structure placement is statistically
+  // independent of tree placement, not a correlated re-derivation of it.
+  const rarityRoll = hash2(rx*911+401, rz*913+403);
+  if(rarityRoll > STRUCTURE_RARITY) return null;
+  const offX = Math.floor(hash2(rx*97+11, rz*97+13) * STRUCTURE_REGION_SIZE);
+  const offZ = Math.floor(hash2(rx*89+17, rz*89+19) * STRUCTURE_REGION_SIZE);
+  return { x: rx*STRUCTURE_REGION_SIZE+offX, z: rz*STRUCTURE_REGION_SIZE+offZ };
+}
+// A site is suitable if the ground is reasonably flat across the whole
+// footprint and clear of the coastline - purely a function of
+// computeTerrainHeight (a pure noise function, no chunk data involved), so
+// candidates can be evaluated WITHOUT touching/generating any chunk data,
+// even for a candidate that turns out unsuitable and gets skipped.
+function isSuitableStructureSite(x,z,radius,maxVariance){
+  let minH=Infinity, maxH=-Infinity;
+  for(let dz=-radius; dz<=radius; dz+=radius){
+    for(let dx=-radius; dx<=radius; dx+=radius){
+      const h = computeTerrainHeight(x+dx,z+dz);
+      if(h<minH) minH=h;
+      if(h>maxH) maxH=h;
+    }
+  }
+  if(maxH-minH > maxVariance) return false;
+  if(minH <= SEA_LEVEL+2) return false; // keep clear of beaches/coastline/underwater
+  return true;
+}
+const WATCHTOWER_RADIUS = 2; // 5x5 footprint (walls at |dx|==2 or |dz|==2)
+const WATCHTOWER_HEIGHT = 14;
+// A hollow square tower: stone foundation slab, cobblestone walls with a
+// south-facing door gap and one window per side at half-height, a planks
+// floor at the base, and an alternating-merlon parapet on top. No interior
+// staircase/ladder (this game has no ladder block yet) - it's a
+// landmark/explorable shell, not a fully traversable building; that's a
+// deliberate scope simplification, not an oversight.
+function buildWatchtower(x, baseY, z){
+  const r = WATCHTOWER_RADIUS;
+  for(let dx=-r; dx<=r; dx++) for(let dz=-r; dz<=r; dz++) World.setRaw(x+dx, baseY-1, z+dz, BLOCKS.STONE);
+  for(let dy=0; dy<WATCHTOWER_HEIGHT; dy++){
+    const y = baseY+dy;
+    for(let dx=-r; dx<=r; dx++){
+      for(let dz=-r; dz<=r; dz++){
+        const onWall = Math.abs(dx)===r || Math.abs(dz)===r;
+        if(!onWall){
+          if(dy===0) World.setRaw(x+dx, y, z+dz, BLOCKS.PLANKS);
+          continue;
+        }
+        const isDoorGap = dz===r && dx===0 && (dy===0||dy===1);
+        const isWindowGap = dy===Math.floor(WATCHTOWER_HEIGHT/2) && ((Math.abs(dx)===r && dz===0) || (Math.abs(dz)===r && dx===0));
+        if(isDoorGap || isWindowGap) continue;
+        World.setRaw(x+dx, y, z+dz, BLOCKS.COBBLESTONE);
+      }
+    }
+  }
+  const topY = baseY+WATCHTOWER_HEIGHT;
+  for(let dx=-r; dx<=r; dx++){
+    for(let dz=-r; dz<=r; dz++){
+      const onWall = Math.abs(dx)===r || Math.abs(dz)===r;
+      if(!onWall) continue;
+      if(((dx+dz)%2+2)%2===0) World.setRaw(x+dx, topY, z+dz, BLOCKS.COBBLESTONE); // alternating merlons
+    }
+  }
+}
+const VILLAGE_RADIUS = 12; // suitability-check radius - bigger than a single tower's, since huts+pool+paths need more clearance
+const VILLAGE_POOL_RADIUS = 3;
+const VILLAGE_HUT_RADIUS = 1;
+const VILLAGE_HUT_HEIGHT = 5;
+const VILLAGE_HUT_DISTANCE = 8; // distance from the village center to each hut's own center
+// A small square hut - same hollow-box shape as buildWatchtower (stone
+// foundation, walls with a door gap, planks floor) but smaller and plainer
+// (no windows, a flat planks roof instead of a parapet). Deliberately NOT
+// sharing buildWatchtower's loop body: the two are similar but not
+// identical, and buildWatchtower already has a pinned-shape regression
+// test - safer to keep it untouched than to generalize it into a shared
+// helper for one reuse.
+// doorDX/doorDZ is a unit offset (one of -1/0/1, exactly one of the two
+// nonzero) naming which wall gets the door gap - buildVillage passes the
+// direction back toward the pool, so every hut's door actually lines up
+// with the path leading to it instead of always facing one fixed way.
+function buildVillageHut(x, baseY, z, doorDX, doorDZ){
+  const r = VILLAGE_HUT_RADIUS;
+  for(let dx=-r; dx<=r; dx++) for(let dz=-r; dz<=r; dz++) World.setRaw(x+dx, baseY-1, z+dz, BLOCKS.STONE);
+  for(let dy=0; dy<VILLAGE_HUT_HEIGHT; dy++){
+    const y = baseY+dy;
+    for(let dx=-r; dx<=r; dx++){
+      for(let dz=-r; dz<=r; dz++){
+        const onWall = Math.abs(dx)===r || Math.abs(dz)===r;
+        if(!onWall){
+          if(dy===0) World.setRaw(x+dx, y, z+dz, BLOCKS.PLANKS);
+          continue;
+        }
+        const isDoorGap = dx===doorDX*r && dz===doorDZ*r && (dy===0||dy===1);
+        if(isDoorGap) continue;
+        World.setRaw(x+dx, y, z+dz, BLOCKS.COBBLESTONE);
+      }
+    }
+  }
+  const roofY = baseY+VILLAGE_HUT_HEIGHT;
+  for(let dx=-r; dx<=r; dx++) for(let dz=-r; dz<=r; dz++) World.setRaw(x+dx, roofY, z+dz, BLOCKS.PLANKS);
+}
+// Straight single-block-wide cobblestone path between two points, resurfacing
+// whatever the REAL terrain's topmost solid block is at each step (not a
+// fixed Y) so it follows the ground's actual contour instead of floating or
+// tunneling on sloped terrain.
+function carvePathSegment(x0,z0,x1,z1){
+  const steps = Math.max(Math.abs(x1-x0), Math.abs(z1-z0));
+  for(let i=0; i<=steps; i++){
+    const t = steps===0 ? 0 : i/steps;
+    const px = Math.round(x0+(x1-x0)*t), pz = Math.round(z0+(z1-z0)*t);
+    World.setRaw(px, computeTerrainHeight(px,pz)-1, pz, BLOCKS.COBBLESTONE);
+  }
+}
+// A small village: a central sunken water pool, with 4 huts at the
+// cardinal directions (each sitting at its OWN local terrain height, not
+// forced to the village center's height, so huts still look grounded on
+// mildly uneven ground) connected back to the pool by cobblestone paths.
+function buildVillage(x, baseY, z){
+  const pr = VILLAGE_POOL_RADIUS;
+  for(let dx=-pr; dx<=pr; dx++){
+    for(let dz=-pr; dz<=pr; dz++){
+      World.setRaw(x+dx, baseY-1, z+dz, BLOCKS.STONE);
+      World.setRaw(x+dx, baseY, z+dz, BLOCKS.WATER);
+    }
+  }
+  const dirs = [[1,0],[-1,0],[0,1],[0,-1]];
+  for(const [ux,uz] of dirs){
+    const hx = x+ux*VILLAGE_HUT_DISTANCE, hz = z+uz*VILLAGE_HUT_DISTANCE;
+    // Door faces -ux/-uz: straight back toward the pool, the same direction
+    // the path below approaches from.
+    buildVillageHut(hx, computeTerrainHeight(hx,hz), hz, -ux, -uz);
+    carvePathSegment(x+ux*(pr+1), z+uz*(pr+1), hx-ux*(VILLAGE_HUT_RADIUS+1), hz-uz*(VILLAGE_HUT_RADIUS+1));
+  }
+}
+// Villager NPCs ("families") that populate these structures are handled
+// entirely separately, in the MOBS section's tryRepopulateNearbyStructure -
+// both buildWatchtower and buildVillage below stay plain World.setRaw calls
+// with no entity-spawning of their own. See that function's own comment for
+// why population is deliberately NOT tied to this one-time decoration pass.
+//
+// Mirrors plantedTreeOrigins: dedupes a given region being resolved twice
+// (by two different neighboring chunks' padded scans) - without this, a
+// structure already carved into the world (and possibly already mined
+// into by the player) would silently get rebuilt/regrown the next time an
+// adjacent chunk loads, exactly the bug plantedTreeOrigins exists to
+// prevent for trees. Keyed by region, not by exact site, so a region that
+// rolls "no candidate" or "unsuitable site" is also remembered and never
+// re-evaluated.
+const placedStructureOrigins = new Set();
+function maybeDecorateStructures(cx,cz){
+  const bx0=cx*CHUNK_SIZE, bz0=cz*CHUNK_SIZE;
+  // A candidate can land anywhere inside its own region cell, and its
+  // footprint can then reach a few more blocks beyond that - pad the
+  // region-scan bounds by a full region width so a candidate anchored just
+  // outside this chunk, but whose walls poke into it, still gets built
+  // when this chunk decorates (same reasoning as maybeDecorateChunk's own
+  // padded tree scan).
+  const pad = STRUCTURE_REGION_SIZE;
+  const rx0 = Math.floor((bx0-pad)/STRUCTURE_REGION_SIZE), rx1 = Math.floor((bx0+CHUNK_SIZE+pad)/STRUCTURE_REGION_SIZE);
+  const rz0 = Math.floor((bz0-pad)/STRUCTURE_REGION_SIZE), rz1 = Math.floor((bz0+CHUNK_SIZE+pad)/STRUCTURE_REGION_SIZE);
+  for(let rz=rz0; rz<=rz1; rz++){
+    for(let rx=rx0; rx<=rx1; rx++){
+      const key = rx+','+rz;
+      if(placedStructureOrigins.has(key)) continue;
+      placedStructureOrigins.add(key);
+      const site = structureRegionCandidate(rx,rz);
+      if(!site) continue;
+      // A second, independently-salted roll picks which structure type to
+      // attempt here. Villages are rarer (bigger footprint, harder to find
+      // flat ground for) - if a village roll can't find enough flat ground
+      // at its larger radius, it falls back to trying the much smaller
+      // watchtower footprint instead of building nothing at all.
+      const typeRoll = hash2(rx*577+211, rz*571+223);
+      if(typeRoll < 0.3 && isSuitableStructureSite(site.x, site.z, VILLAGE_RADIUS, 4)){
+        buildVillage(site.x, computeTerrainHeight(site.x,site.z), site.z);
+      } else if(isSuitableStructureSite(site.x, site.z, WATCHTOWER_RADIUS, 3)){
+        buildWatchtower(site.x, computeTerrainHeight(site.x,site.z), site.z);
+      }
+    }
+  }
+}
+
 //////////////////////////////////////////////////////////////
 // TEXTURE ATLAS — procedurally generated, fully original pixel
 // art (16x16 cells). Nothing here is copied from any existing
 // game's assets.
 //////////////////////////////////////////////////////////////
-// ATLAS_ROWS was raised from 7 to 11 (then 13) to make room for this
-// round's additions (buckets, axes, six new ores/materials and their tool
-// tiers, armor, bow and arrows, farming, boats) well ahead of allocCell()'s
-// capacity guard.
-const ATLAS_COLS = 8, ATLAS_ROWS = 13, CELL_PX = 32;
+// ATLAS_ROWS was raised from 7 to 11 (then 13, then 14) to make room for
+// each round's additions - most recently the Ashlands' Scorchstone/Lava
+// terrain blocks and the Rift Shard travel item - well ahead of
+// allocCell()'s capacity guard.
+const ATLAS_COLS = 8, ATLAS_ROWS = 14, CELL_PX = 32;
 // Scale factor relative to the original 16px-per-cell pixel-art baseline.
 // Hand-placed icon coordinates below (tools, hearts, ingots, etc.) were
 // designed at 16px and are multiplied by S so they scale up cleanly to fill
@@ -1571,6 +1984,23 @@ function buildTextureAtlas(){
   define('hoe_wood',(ox,oy)=>drawToolIcon(ox,oy,'hoe','#a97c50'));
   define('hoe_stone',(ox,oy)=>drawToolIcon(ox,oy,'hoe','#9a9a9a'));
   define('hoe_iron',(ox,oy)=>drawToolIcon(ox,oy,'hoe','#e8e8e8'));
+  // Shears: two diagonal blades opening in a V from a central pivot rivet,
+  // with a pair of diagonal handle "legs" below - same stepped-diagonal
+  // stroke technique as the pick/axe/hoe handles, just mirrored into an X.
+  define('shears',(ox,oy)=>{
+    actx.fillStyle = '#cfcfcf';
+    for(let i=0;i<6;i++) actx.fillRect(ox+(7-i)*S, oy+(6-i)*S, 2*S,2*S);
+    for(let i=0;i<6;i++) actx.fillRect(ox+(7+i)*S, oy+(6-i)*S, 2*S,2*S);
+    actx.fillStyle = '#5a4632';
+    for(let i=0;i<5;i++) actx.fillRect(ox+(6-i)*S, oy+(8+i)*S, 2*S,2*S);
+    for(let i=0;i<5;i++) actx.fillRect(ox+(8+i)*S, oy+(8+i)*S, 2*S,2*S);
+    actx.fillStyle = '#3a3a3a';
+    actx.fillRect(ox+7*S,oy+6*S,2*S,2*S);
+  });
+  define('leather_helmet',(ox,oy)=>drawArmorIcon(ox,oy,'helmet','#a5622f'));
+  define('leather_chestplate',(ox,oy)=>drawArmorIcon(ox,oy,'chestplate','#a5622f'));
+  define('leather_leggings',(ox,oy)=>drawArmorIcon(ox,oy,'leggings','#a5622f'));
+  define('leather_boots',(ox,oy)=>drawArmorIcon(ox,oy,'boots','#a5622f'));
   define('iron_helmet',(ox,oy)=>drawArmorIcon(ox,oy,'helmet','#c8c8c8'));
   define('iron_chestplate',(ox,oy)=>drawArmorIcon(ox,oy,'chestplate','#c8c8c8'));
   define('iron_leggings',(ox,oy)=>drawArmorIcon(ox,oy,'leggings','#c8c8c8'));
@@ -1624,6 +2054,35 @@ function buildTextureAtlas(){
     actx.fillStyle='#8a5a2f';
     actx.fillRect(ox+5*S,oy+6*S,S,2*S); actx.fillRect(ox+8*S,oy+6*S,S,2*S); actx.fillRect(ox+11*S,oy+6*S,S,2*S);
   });
+  define('wool',(ox,oy)=>{
+    // Rounded fluffy blob: a stepped-narrower top/bottom row around a
+    // full-width middle row (same "narrow-wide-narrow" silhouette trick as
+    // the gem icon), plus a few darker shading patches and one highlight -
+    // same shading approach as raw_food/cooked_food/bread above.
+    actx.fillStyle = '#e4e0d4';
+    actx.fillRect(ox+3*S,oy+2*S,10*S,2*S);
+    actx.fillRect(ox+2*S,oy+4*S,12*S,7*S);
+    actx.fillRect(ox+3*S,oy+11*S,10*S,2*S);
+    actx.globalAlpha=0.3; actx.fillStyle='#b8b2a0';
+    actx.fillRect(ox+3*S,oy+3*S,3*S,2*S); actx.fillRect(ox+9*S,oy+6*S,3*S,2*S); actx.fillRect(ox+4*S,oy+9*S,3*S,2*S);
+    actx.globalAlpha=0.3; actx.fillStyle='#fff';
+    actx.fillRect(ox+4*S,oy+5*S,3*S,2*S);
+    actx.globalAlpha=1;
+  });
+  define('leather',(ox,oy)=>{
+    // Square hide with a darker stitched border and a stitch-line X through
+    // the middle - reads as a tanned pelt, distinct from wool's fluffy blob
+    // and raw_food's rounded meat shape.
+    actx.fillStyle = '#8a5a34';
+    actx.fillRect(ox+3*S,oy+3*S,10*S,10*S);
+    actx.globalAlpha=0.3; actx.fillStyle='#5a3a1f';
+    actx.fillRect(ox+3*S,oy+3*S,10*S,S); actx.fillRect(ox+3*S,oy+12*S,10*S,S);
+    actx.fillRect(ox+3*S,oy+3*S,S,10*S); actx.fillRect(ox+12*S,oy+3*S,S,10*S);
+    actx.globalAlpha=1;
+    actx.strokeStyle='#3a2412'; actx.lineWidth=Math.max(1,S*0.5);
+    actx.beginPath(); actx.moveTo(ox+5*S,oy+5*S); actx.lineTo(ox+11*S,oy+11*S); actx.stroke();
+    actx.beginPath(); actx.moveTo(ox+11*S,oy+5*S); actx.lineTo(ox+5*S,oy+11*S); actx.stroke();
+  });
   define('bucket',(ox,oy)=>{
     actx.strokeStyle='#7a7a7a'; actx.lineWidth=Math.max(1,S*0.8);
     actx.beginPath(); actx.arc(ox+8*S,oy+5*S,4*S,Math.PI,0); actx.stroke();
@@ -1647,11 +2106,88 @@ function buildTextureAtlas(){
   define('food_full',(ox,oy)=>drawBitmapIcon(ox,oy,FOOD_BITMAP,'#c9884a',true));
   define('food_half',(ox,oy)=>drawBitmapIcon(ox,oy,FOOD_BITMAP,'#c9884a',false));
   define('food_empty',(ox,oy)=>drawBitmapIcon(ox,oy,FOOD_BITMAP,'#4a4a4a',true));
+  // The Ashlands (see the DIMENSIONS registry) - a scorched terrain block
+  // and a molten hazard liquid, plus the travel item that gets you there.
+  define('scorchstone',(ox,oy,rand)=>{
+    fillNoisy(ox,oy,'#4a2f28',14,rand);
+    actx.strokeStyle='#2a1712'; actx.lineWidth=Math.max(1,S*0.7);
+    for(let i=0;i<Math.round(2*S);i++){
+      actx.beginPath();
+      let x=2+rand()*(CELL_PX-4), y=2+rand()*(CELL_PX-4);
+      actx.moveTo(ox+x,oy+y);
+      const segs=2+Math.floor(rand()*2);
+      for(let s=0;s<segs;s++){ x+=(rand()-0.5)*10*S; y+=(rand()-0.5)*10*S; actx.lineTo(ox+x,oy+y); }
+      actx.stroke();
+    }
+    // A few ember flecks - reads as freshly-scorched rather than plain dark
+    // stone.
+    actx.fillStyle='#d9662a';
+    for(let i=0;i<Math.round(3*S);i++){
+      const x=Math.floor(rand()*CELL_PX), y=Math.floor(rand()*CELL_PX);
+      actx.fillRect(ox+x,oy+y,S,S);
+    }
+    edgeShade(ox,oy);
+  });
+  define('lava',(ox,oy,rand)=>{
+    // Same noisy-fill + banded-line structure as 'water' above, just warm-
+    // toned (orange/red base, dark crack-lines instead of white ripples) so
+    // it reads clearly as a distinct hazard liquid at a glance.
+    fillNoisy(ox,oy,'#c9401d',14,rand);
+    actx.globalAlpha=0.55; actx.fillStyle='#ffb238';
+    for(let i=0;i<Math.round(5*S);i++){
+      const x=Math.floor(rand()*CELL_PX), y=Math.floor(rand()*CELL_PX);
+      actx.fillRect(ox+x,oy+y,2*S,2*S);
+    }
+    actx.globalAlpha=1;
+    actx.strokeStyle='rgba(40,10,0,0.5)'; actx.lineWidth=Math.max(1,S*0.6);
+    for(let y=2*S;y<CELL_PX;y+=5*S){
+      actx.beginPath(); actx.moveTo(ox,oy+y); actx.lineTo(ox+CELL_PX,oy+y+S); actx.stroke();
+    }
+  });
+  define('rift_shard',(ox,oy)=>{
+    // Narrow elongated crystal shard - similar silhouette language to the
+    // gem icons (narrow-wide-narrow) but taller/thinner, with a violet
+    // "rift" glow instead of a solid gem color, so it reads as a portal
+    // key/charm rather than a mined mineral.
+    actx.fillStyle = '#6a2fb8';
+    actx.fillRect(ox+7*S,oy+1*S,2*S,3*S);
+    actx.fillRect(ox+5*S,oy+4*S,6*S,7*S);
+    actx.fillRect(ox+7*S,oy+11*S,2*S,3*S);
+    actx.globalAlpha=0.5; actx.fillStyle='#c79bf5';
+    actx.fillRect(ox+6*S,oy+5*S,2*S,5*S);
+    actx.globalAlpha=1;
+    actx.strokeStyle='#2e1259'; actx.lineWidth=Math.max(1,S*0.5);
+    actx.strokeRect(ox+5*S,oy+4*S,6*S,7*S);
+  });
+  // The Voidreach's terrain block - same noisy-fill + crack-line structure
+  // as 'stone'/'scorchstone' above, just a pale violet-grey base with faint
+  // lavender veins (echoing the Rift Shard's own glow) instead of warm
+  // ember flecks, so it reads as "from the same place" as the travel item.
+  define('voidstone',(ox,oy,rand)=>{
+    fillNoisy(ox,oy,'#5c5468',14,rand);
+    actx.strokeStyle='#332e3d'; actx.lineWidth=Math.max(1,S*0.7);
+    for(let i=0;i<Math.round(2*S);i++){
+      actx.beginPath();
+      let x=2+rand()*(CELL_PX-4), y=2+rand()*(CELL_PX-4);
+      actx.moveTo(ox+x,oy+y);
+      const segs=2+Math.floor(rand()*2);
+      for(let s=0;s<segs;s++){ x+=(rand()-0.5)*10*S; y+=(rand()-0.5)*10*S; actx.lineTo(ox+x,oy+y); }
+      actx.stroke();
+    }
+    actx.globalAlpha=0.5; actx.fillStyle='#b89adb';
+    for(let i=0;i<Math.round(3*S);i++){
+      const x=Math.floor(rand()*CELL_PX), y=Math.floor(rand()*CELL_PX);
+      actx.fillRect(ox+x,oy+y,S,S);
+    }
+    actx.globalAlpha=1;
+    edgeShade(ox,oy);
+  });
 }
 
 const RENDER_LAYER = {};
 RENDER_LAYER[BLOCKS.LEAVES] = 'cutout';
 RENDER_LAYER[BLOCKS.WATER] = 'glass';
+RENDER_LAYER[BLOCKS.LAVA] = 'glass';
 RENDER_LAYER[BLOCKS.GLASS] = 'glass';
 RENDER_LAYER[BLOCKS.DOOR_OPEN] = 'cutout';
 RENDER_LAYER[BLOCKS.WHEAT_0] = 'cutout';
@@ -1848,7 +2384,14 @@ const ChunkManager = {
     // already calls getOrCreateChunkData() internally, so buildChunkMesh's
     // boundary-face queries into neighboring chunks generate that data on
     // demand regardless. Explicitly pre-touching it was pure overhead.)
-    maybeDecorateChunk(cx,cz);
+    // Tree/structure decoration is Overworld-specific (both hardcode
+    // computeTerrainHeight, not the current dimension's own heightFn) - a
+    // future realm that wants its own decoration gets its own function
+    // here, same as it gets its own genFn/heightFn in DIMENSIONS.
+    if(currentDimension==='overworld'){
+      maybeDecorateChunk(cx,cz);
+      maybeDecorateStructures(cx,cz);
+    }
     this.loaded.add(key);
     this.rebuildChunk(cx,cz);
   },
@@ -2157,6 +2700,20 @@ function switchPlayerMode(newMode){
 }
 
 function respawnPlayer(){
+  // Dying anywhere sends the player back to the Overworld. If they died
+  // somewhere else, that dimension's loaded chunks/mobs/items/arrows need
+  // the exact same teardown switchDimension does (see
+  // unloadAllChunksAndEntities's own comment for why) - skipped entirely
+  // when already in the Overworld, which is the only case that existed
+  // before this function had a dimension concept at all, so that path is
+  // byte-for-byte unchanged.
+  if(currentDimension!=='overworld'){
+    unloadAllChunksAndEntities();
+    currentDimension = 'overworld';
+    const pcx=Math.floor(World.spawnPoint.x/CHUNK_SIZE), pcz=Math.floor(World.spawnPoint.z/CHUNK_SIZE);
+    ChunkManager.loadAreaImmediate(pcx, pcz, 2);
+    updateDayNight(0);
+  }
   player.pos.set(World.spawnPoint.x, World.spawnPoint.y, World.spawnPoint.z);
   player.vel.set(0,0,0);
   player.health = player.maxHealth;
@@ -2482,7 +3039,11 @@ canvasEl.addEventListener('mousedown', e=>{
     if(mob) attackMob(mob);
     else if(player.mode==='creative') tryBreakBlockCreative();
   }
-  if(e.button===2){ tryPlaceOrInteract(); }
+  if(e.button===2){
+    const mob = findTargetedMob();
+    if(mob && tryShearMob(mob)) return;
+    tryPlaceOrInteract();
+  }
 });
 window.addEventListener('mouseup', e=>{ if(e.button===0) Input.leftDown=false; });
 canvasEl.addEventListener('contextmenu', e=>e.preventDefault());
@@ -2542,9 +3103,13 @@ const RECIPES = [
   { id:'pick_tungsten', shaped:true, pattern:['PPP','.S.','.S.'], key:{P:ITEMS_EXTRA.TUNGSTEN_INGOT,S:ITEMS_EXTRA.STICK}, output:{item:ITEMS_EXTRA.PICK_TUNGSTEN,count:1} },
   { id:'sword_tungsten', shaped:true, pattern:['P','P','S'], key:{P:ITEMS_EXTRA.TUNGSTEN_INGOT,S:ITEMS_EXTRA.STICK}, output:{item:ITEMS_EXTRA.SWORD_TUNGSTEN,count:1} },
   { id:'axe_tungsten', shaped:true, pattern:['PP','PS','.S'], key:{P:ITEMS_EXTRA.TUNGSTEN_INGOT,S:ITEMS_EXTRA.STICK}, output:{item:ITEMS_EXTRA.AXE_TUNGSTEN,count:1} },
-  // Armor, same shapes as vanilla Minecraft's own armor recipes. Two tiers
-  // (iron/diamond) - see the ItemDef comment above for why the other
-  // materials don't get armor sets.
+  // Armor, same shapes as vanilla Minecraft's own armor recipes. Three tiers
+  // (leather/iron/diamond) - see the ItemDef comment above for why the
+  // other mined materials don't get armor sets.
+  { id:'helmet_leather', shaped:true, pattern:['PPP','P.P'], key:{P:ITEMS_EXTRA.LEATHER}, output:{item:ITEMS_EXTRA.LEATHER_HELMET,count:1} },
+  { id:'chestplate_leather', shaped:true, pattern:['P.P','PPP','PPP'], key:{P:ITEMS_EXTRA.LEATHER}, output:{item:ITEMS_EXTRA.LEATHER_CHESTPLATE,count:1} },
+  { id:'leggings_leather', shaped:true, pattern:['PPP','P.P','P.P'], key:{P:ITEMS_EXTRA.LEATHER}, output:{item:ITEMS_EXTRA.LEATHER_LEGGINGS,count:1} },
+  { id:'boots_leather', shaped:true, pattern:['P.P','P.P'], key:{P:ITEMS_EXTRA.LEATHER}, output:{item:ITEMS_EXTRA.LEATHER_BOOTS,count:1} },
   { id:'helmet_iron', shaped:true, pattern:['PPP','P.P'], key:{P:ITEMS_EXTRA.IRON_INGOT}, output:{item:ITEMS_EXTRA.IRON_HELMET,count:1} },
   { id:'chestplate_iron', shaped:true, pattern:['P.P','PPP','PPP'], key:{P:ITEMS_EXTRA.IRON_INGOT}, output:{item:ITEMS_EXTRA.IRON_CHESTPLATE,count:1} },
   { id:'leggings_iron', shaped:true, pattern:['PPP','P.P','P.P'], key:{P:ITEMS_EXTRA.IRON_INGOT}, output:{item:ITEMS_EXTRA.IRON_LEGGINGS,count:1} },
@@ -2577,8 +3142,24 @@ const RECIPES = [
   // recipes before shapeless ones (see its comment) instead of once again
   // reaching for the second-ingredient workaround.
   { id:'boat', shaped:true, pattern:['P.P','PPP'], key:{P:BLOCKS.PLANKS}, output:{item:BLOCKS.BOAT,count:1} },
+  // Shears: same vanilla diagonal 2-iron-ingot shape.
+  { id:'shears', shaped:true, pattern:['.I','I.'], key:{I:ITEMS_EXTRA.IRON_INGOT}, output:{item:ITEMS_EXTRA.SHEARS,count:1} },
+  // Wool Block: same "4 anywhere in at least a 2x2" shapeless pattern as the
+  // Crafting Table's 4 planks - a single-material trigger, but safe from the
+  // shaped-vs-shapeless collision class documented on 'boat' above since no
+  // shaped recipe is keyed on WOOL.
+  { id:'wool_block', shapeless:true, minGrid:2, inputs:[{item:ITEMS_EXTRA.WOOL,count:4}], output:{item:BLOCKS.WOOL_BLOCK,count:1} },
+  // Rift Shard: a reusable travel key (not consumed on use - see
+  // tryUseItem/switchDimension), crafted from three of the rarer mined
+  // gems so it's gated behind having found/mined all three first. 3
+  // distinct item types, count 1 each - safe as shapeless (no shaped
+  // recipe uses this combination). minGrid:3 requires the crafting table's
+  // full 3x3 grid, not just the starter 2x2 personal grid, matching
+  // furnace's precedent for a "significant" recipe.
+  { id:'rift_shard', shapeless:true, minGrid:3, inputs:[{item:ITEMS_EXTRA.DIAMOND,count:1},{item:ITEMS_EXTRA.RUBY,count:1},{item:ITEMS_EXTRA.EMERALD,count:1}], output:{item:ITEMS_EXTRA.RIFT_SHARD,count:1} },
 ];
 const SMELT_RECIPES = [
+  { input:ITEMS_EXTRA.RAW_FOOD, output:ITEMS_EXTRA.COOKED_FOOD, time:3 },
   { input:BLOCKS.IRON_ORE, output:ITEMS_EXTRA.IRON_INGOT, time:4 },
   { input:BLOCKS.SAND, output:BLOCKS.GLASS, time:3 },
   { input:BLOCKS.STONE, output:BLOCKS.BRICKS, time:4 },
@@ -3283,6 +3864,20 @@ function tryUseItem(stack){
     }
     return;
   }
+  // Rift Shard: right-click anywhere (no target needed, same as the bow
+  // above) to step to the next realm in DIMENSION_CYCLE (Overworld ->
+  // Ashlands -> Voidreach -> back to Overworld). Not consumed - see its
+  // ItemDef comment - so no count/durability bookkeeping here.
+  if(stack.id===ITEMS_EXTRA.RIFT_SHARD){
+    const cycleIdx = DIMENSION_CYCLE.indexOf(currentDimension);
+    // indexOf is -1 if currentDimension somehow isn't in the cycle (can't
+    // happen today, but +1 on -1 correctly lands on index 0 = 'overworld'
+    // anyway, a safe fallback rather than a crash).
+    const nextDim = DIMENSION_CYCLE[(cycleIdx+1) % DIMENSION_CYCLE.length];
+    switchDimension(nextDim);
+    playSound('rift');
+    return;
+  }
   // Hoe: right-click Grass/Dirt to till it into Farmland. Requires clear air
   // above (same spirit as block placement needing an empty target cell) so
   // you can't till something buried under another block.
@@ -3450,10 +4045,15 @@ function maybeRefreshStatBars(){
 //////////////////////////////////////////////////////////////
 // MOBS — simple original box-based creatures
 //////////////////////////////////////////////////////////////
-const MAX_MOBS = 10;
+// Raised from 10 alongside villager population (see tryRepopulateNearbyStructure
+// below): a single village alone targets 4 occupants, and the old cap of 10
+// left almost no headroom for wildlife/hostile spawns once a village and a
+// tower were both nearby.
+const MAX_MOBS = 18;
 const mobs = [];
 let mobIdCounter = 1;
 let mobSpawnTimer = 5;
+let villagerRepopTimer = 6;
 // Per-kind stats table. 'critter' and 'hostile' values are an exact extract
 // of what used to be inline ternaries (ids/behavior unchanged so existing
 // tests that spawn 'critter'/'hostile' by name keep working identically);
@@ -3463,10 +4063,48 @@ const MOB_STATS = {
   rabbit:  { health:3, speed:2.0, bodyColor:0xe8e4da, headColor:0xf5f0e8, legColor:0xd8d2c4, scale:0.6, passive:true, flees:true },
   hostile: { health:10, chaseSpeed:1.8, wanderSpeed:0.8, bodyColor:0x3a4a3a, headColor:0x2e3a2e, legColor:0x232b23, eyeColor:0xff3030, scale:1, passive:false },
   spider:  { health:8, chaseSpeed:2.6, wanderSpeed:1.2, bodyColor:0x18181c, headColor:0x101013, legColor:0x0c0c0e, eyeColor:0xb030ff, scale:1, passive:false },
+  // Slow shambling tank: tankier and slower than the generic hostile in
+  // both wander and chase speed, sickly-green palette + a dull yellow-green
+  // eye tone to read as a distinct hostile kind at a glance (vs hostile's
+  // red / spider's purple).
+  zombie:  { health:14, chaseSpeed:1.3, wanderSpeed:0.6, bodyColor:0x4a6b3a, headColor:0x3a5a2e, legColor:0x2a4020, eyeColor:0xd4ff30, scale:1, passive:false },
   // lootExtra: dropped IN ADDITION to the generic passive raw-food drop
   // below (matches vanilla chickens dropping both raw chicken and
   // feathers) - min/max are read in attackMob's death branch.
   chicken: { health:4, speed:1.3, bodyColor:0xf2ede0, headColor:0xf5f0e8, legColor:0xe8b23a, scale:0.65, passive:true, lootExtra:{item:ITEMS_EXTRA.FEATHER, min:1, max:2} },
+  // shearable+shearDrop: right-click with Shears (see tryShearMob) pops wool
+  // without killing it, on a cooldown (see SHEAR_COOLDOWN_SECONDS). Killing
+  // it drops wool too via lootExtra, same "stacks on top of the generic
+  // passive drop" pattern as chicken's feathers above.
+  sheep: { health:8, speed:1.0, bodyColor:0xece6d8, headColor:0x4a4544, legColor:0x3a3530, scale:0.85, passive:true,
+    shearable:true, shearDrop:{item:ITEMS_EXTRA.WOOL, min:1, max:3}, lootExtra:{item:ITEMS_EXTRA.WOOL, min:1, max:2} },
+  // Bigger + slower than the other passives. lootExtra drops Leather on top
+  // of the generic passive raw-food drop (the game's food items are already
+  // generic "Raw Meat"/"Cooked Meat", so no separate "raw beef" item is
+  // needed - same reasoning that kept chicken/sheep off a per-species item).
+  cow: { health:10, speed:0.85, bodyColor:0x3a2a1c, headColor:0x2a1c12, legColor:0x1c1209, scale:1.15, passive:true,
+    lootExtra:{item:ITEMS_EXTRA.LEATHER, min:1, max:2} },
+  // ranged+shootRange: read in updateMobAI's stats.ranged branch, which
+  // fires a hostile arrow (see spawnHostileArrow) on a cooldown instead of
+  // the generic melee-attack block every other hostile uses. Pale bone
+  // palette + dark eye sockets to read as a distinct hostile kind.
+  skeleton:{ health:8, chaseSpeed:1.5, wanderSpeed:0.8, bodyColor:0xcfcfc0, headColor:0xe0e0d0, legColor:0xb8b8a8, eyeColor:0x1a1a1a, scale:1, passive:false, ranged:true, shootRange:9 },
+  // A human NPC that populates structures (see tryRepopulateNearbyStructure),
+  // not wildlife: noFoodDrop suppresses the generic passive death-drop below
+  // (killing a person shouldn't drop "Raw Meat"), and leashRadius softly
+  // biases wandering back toward the mob's own homePos (set at spawn time -
+  // see updateMobAI's passive wander branch) once it strays too far, so a
+  // village's population actually stays near the village instead of
+  // wandering off over time. Robe-brown body, skin-tone head, darker
+  // robe-hem legs.
+  villager:{ health:20, speed:0.9, bodyColor:0x8a5a3a, headColor:0xe0b088, legColor:0x5a3a24, scale:1, passive:true, noFoodDrop:true, leashRadius:12 },
+  // A hostile unique to the Voidreach (see trySpawnMob's currentDimension===
+  // 'voidreach' branch) - reuses the exact same generic chase/melee hostile
+  // AI every other non-ranged hostile already has (no new mob-AI code), just
+  // distinct stats/palette: the fastest chaser after spider but the
+  // frailest hostile in the game, with a washed-out violet palette echoing
+  // the Rift Shard's own glow color so it visually reads as "belongs here."
+  wraith: { health:6, chaseSpeed:2.2, wanderSpeed:1.0, bodyColor:0x2a1f3d, headColor:0x1c1428, legColor:0x140e1f, eyeColor:0xd9baff, scale:1, passive:false },
 };
 
 function createMobMesh(kind){
@@ -3496,7 +4134,17 @@ function createMobMesh(kind){
   group.scale.setScalar(stats.scale||1);
   return group;
 }
-function spawnMob(kind,x,y,z){
+// homePos (optional) is only meaningful for leashed mobs (see
+// MOB_STATS.villager) - defaults to the spawn point itself so every mob has
+// a well-defined homePos regardless of kind, without changing behavior for
+// any existing non-leashed call site.
+function spawnMob(kind,x,y,z,homePos){
+  // init() calls computeSpawnPoint() (which can reach spawnMob indirectly
+  // via tryRepopulateNearbyStructure/maybeDecorateStructures) BEFORE
+  // initScene() sets up `scene` - guard the same way spawnArrow already
+  // does, so an early structure-population attempt at startup can't crash
+  // on scene.add(mesh) below.
+  if(!scene) return null;
   if(mobs.length>=MAX_MOBS) return null;
   const stats = MOB_STATS[kind] || MOB_STATS.critter;
   const mesh = createMobMesh(kind);
@@ -3505,8 +4153,9 @@ function spawnMob(kind,x,y,z){
   const mob = {
     id:mobIdCounter++, kind, mesh,
     pos:new THREE.Vector3(x,y,z), vel:new THREE.Vector3(0,0,0),
+    homePos: homePos || {x,y,z},
     health: stats.health, maxHealth: stats.health,
-    wanderTimer:0, attackTimer:0, hitFlash:0, dead:false,
+    wanderTimer:0, attackTimer:0, hitFlash:0, shearCooldown:0, dead:false,
   };
   mobs.push(mob);
   return mob;
@@ -3529,6 +4178,7 @@ function mobCollides(x,y,z){
 }
 function updateMobAI(m, dt){
   if(m.hitFlash>0) m.hitFlash -= dt;
+  if(m.shearCooldown>0) m.shearCooldown -= dt;
   const stats = MOB_STATS[m.kind] || MOB_STATS.critter;
   if(stats.passive){
     const speed = stats.speed||1.0;
@@ -3547,7 +4197,16 @@ function updateMobAI(m, dt){
       m.wanderTimer -= dt;
       if(m.wanderTimer<=0){
         m.wanderTimer = 2+Math.random()*3;
-        const ang=Math.random()*Math.PI*2;
+        let ang=Math.random()*Math.PI*2;
+        // Soft leash (see MOB_STATS.villager): once too far from home, bias
+        // this wander tick's direction straight back toward it instead of a
+        // hard position clamp - the mob still just looks like it's wandering,
+        // it just trends home again over the next few wander cycles rather
+        // than drifting away forever.
+        if(stats.leashRadius && m.homePos){
+          const hdx=m.homePos.x-m.pos.x, hdz=m.homePos.z-m.pos.z;
+          if(hdx*hdx+hdz*hdz > stats.leashRadius*stats.leashRadius) ang = Math.atan2(hdz,hdx);
+        }
         m.vel.x = Math.random()<0.3?0:Math.cos(ang)*speed;
         m.vel.z = Math.random()<0.3?0:Math.sin(ang)*speed;
       }
@@ -3567,7 +4226,22 @@ function updateMobAI(m, dt){
       }
     }
     m.attackTimer -= dt;
-    if(dist<1.15 && player.mode==='survival' && !player.dead && m.attackTimer<=0){
+    if(stats.ranged){
+      // Ranged hostiles (see MOB_STATS.skeleton) fire an arrow instead of
+      // meleeing - same LOS check as the melee branch below, gated by
+      // shootRange instead of melee's dist<1.15, reusing attackTimer as a
+      // reload cooldown (a mob is either ranged or melee, never both, so
+      // there's no conflict sharing the one timer field).
+      if(dist<(stats.shootRange||9) && player.mode==='survival' && !player.dead && m.attackTimer<=0){
+        const eyeM = new THREE.Vector3(m.pos.x, m.pos.y+0.4, m.pos.z);
+        const toP = new THREE.Vector3(player.pos.x-eyeM.x, (player.pos.y+EYE_HEIGHT*0.6)-eyeM.y, player.pos.z-eyeM.z);
+        const d3 = toP.length();
+        if(d3>0.0001 && !raycastVoxel(eyeM, toP.clone().normalize(), Math.max(0,d3-0.1))){
+          m.attackTimer = 1.6;
+          spawnHostileArrow(m);
+        }
+      }
+    } else if(dist<1.15 && player.mode==='survival' && !player.dead && m.attackTimer<=0){
       // Line-of-sight: a solid block between the mob and player (e.g. a
       // thin wall met exactly at a corner) should block the melee hit,
       // same as it blocks the player's own attacks on mobs.
@@ -3597,12 +4271,33 @@ function updateMobAI(m, dt){
 }
 function trySpawnMob(isNight){
   let kind;
-  if(isNight){
+  if(currentDimension==='voidreach'){
+    // The Voidreach has its own hostile mix (see MOB_STATS.wraith) rather
+    // than falling into the generic non-Overworld branch below - wraiths
+    // dominate, skeleton/hostile fill out the rest, but no spider/zombie
+    // here, so it reads as genuinely distinct from the Ashlands rather than
+    // a reskinned copy of the exact same spawn table. Same no-bail-gate
+    // reasoning as the Ashlands branch below - full cadence, hostile-only.
+    const nroll = Math.random();
+    kind = nroll<0.45 ? 'wraith' : (nroll<0.75 ? 'skeleton' : 'hostile');
+  } else if(currentDimension!=='overworld'){
+    // The Ashlands (and any future realm without its own spawn table yet):
+    // hostile-only, regardless of time of day - there is no day/night cycle
+    // here (see updateNonOverworldAtmosphere) - reusing the exact night
+    // hostile-kind roll rather than inventing new kinds for a first pass.
+    // Deliberately skips the Overworld night branch's 55% bail gate too:
+    // every attempt here is already hostile-only, so the full spawn cadence
+    // is what makes this realm read as more dangerous than the Overworld's
+    // wildlife-diluted rate, not a bug.
+    const nroll = Math.random();
+    kind = nroll<0.25 ? 'spider' : (nroll<0.5 ? 'zombie' : (nroll<0.75 ? 'skeleton' : 'hostile'));
+  } else if(isNight){
     if(Math.random()<0.55) return;
-    kind = Math.random()<0.35 ? 'spider' : 'hostile';
+    const nroll = Math.random();
+    kind = nroll<0.25 ? 'spider' : (nroll<0.5 ? 'zombie' : (nroll<0.75 ? 'skeleton' : 'hostile'));
   } else {
     const roll = Math.random();
-    kind = roll<0.25 ? 'rabbit' : (roll<0.5 ? 'chicken' : 'critter');
+    kind = roll<0.2 ? 'rabbit' : (roll<0.4 ? 'chicken' : (roll<0.6 ? 'sheep' : (roll<0.8 ? 'cow' : 'critter')));
   }
   for(let attempt=0; attempt<6; attempt++){
     const ang=Math.random()*Math.PI*2, dist=10+Math.random()*14;
@@ -3613,7 +4308,10 @@ function trySpawnMob(isNight){
     if(y<1||y>WORLD_HEIGHT-2) continue;
     const groundId=World.get(x,y-1,z);
     if(groundId===BLOCKS.AIR) continue;
-    if(!isNight && groundId!==BLOCKS.GRASS) continue;
+    // The GRASS-only daytime gate is an Overworld-specific concept (the
+    // Ashlands has no grass equivalent - see generateAshlandsChunkData) -
+    // any solid Ashlands ground is fine regardless of isNight.
+    if(currentDimension==='overworld' && !isNight && groundId!==BLOCKS.GRASS) continue;
     // Ground can be a tree-trunk column even though it reads as solid
     // "ground" - make sure the mob's own 2-block-tall body is actually
     // clear (not embedded in a trunk/canopy) before spawning.
@@ -3622,10 +4320,74 @@ function trySpawnMob(isNight){
     return;
   }
 }
+// Keeps nearby structures (see the STRUCTURES section above) populated with
+// villagers, fully decoupled from buildVillage/buildWatchtower's one-time,
+// placedStructureOrigins-gated decoration pass. That pass fires exactly once
+// per region, ever - if villager spawning were tied to it directly, a
+// village's population would vanish the first time the player wandered
+// >55 blocks away (see updateMobs' distance-despawn below) and never come
+// back on a later revisit, since the structure itself never re-decorates.
+// Instead this is fully STATELESS: it re-derives nearby structure sites on
+// demand from the exact same pure functions maybeDecorateStructures uses
+// (structureRegionCandidate/isSuitableStructureSite/computeTerrainHeight,
+// plus the identical typeRoll formula for village-vs-tower), so "is there a
+// structure near the player, and is it understaffed" can always be
+// recomputed fresh with no persistent structure registry needed. Attempts
+// at most one spawn per call, same cadence as trySpawnMob.
+const VILLAGER_TARGET_PER_TOWER = 2;
+const VILLAGER_TARGET_PER_VILLAGE = 4;
+const VILLAGER_STRUCTURE_SEARCH_RADIUS = 40;
+function tryRepopulateNearbyStructure(){
+  const prx = Math.floor(player.pos.x/STRUCTURE_REGION_SIZE), prz = Math.floor(player.pos.z/STRUCTURE_REGION_SIZE);
+  for(let rz=prz-1; rz<=prz+1; rz++){
+    for(let rx=prx-1; rx<=prx+1; rx++){
+      const site = structureRegionCandidate(rx,rz);
+      if(!site) continue;
+      const ddx=site.x-player.pos.x, ddz=site.z-player.pos.z;
+      if(ddx*ddx+ddz*ddz > VILLAGER_STRUCTURE_SEARCH_RADIUS*VILLAGER_STRUCTURE_SEARCH_RADIUS) continue;
+      // Same type roll/fallback logic as maybeDecorateStructures, so this
+      // agrees with whatever actually got built at this site.
+      const typeRoll = hash2(rx*577+211, rz*571+223);
+      const isVillage = typeRoll<0.3 && isSuitableStructureSite(site.x, site.z, VILLAGE_RADIUS, 4);
+      const isTower = !isVillage && isSuitableStructureSite(site.x, site.z, WATCHTOWER_RADIUS, 3);
+      if(!isVillage && !isTower) continue;
+      const target = isVillage ? VILLAGER_TARGET_PER_VILLAGE : VILLAGER_TARGET_PER_TOWER;
+      const occupants = mobs.filter(m=>m.kind==='villager' && m.homePos && Math.abs(m.homePos.x-site.x)<1 && Math.abs(m.homePos.z-site.z)<1).length;
+      if(occupants>=target) continue;
+      if(mobs.length>=MAX_MOBS) return null;
+      // Villages spawn near one of the 4 huts (picked at random) rather than
+      // at the village's own center point, which is the sunken water pool -
+      // towers just spawn near their single center.
+      let sx=site.x, sz=site.z;
+      if(isVillage){
+        const dirs=[[1,0],[-1,0],[0,1],[0,-1]];
+        const [ux,uz]=dirs[Math.floor(Math.random()*4)];
+        sx = site.x+ux*VILLAGE_HUT_DISTANCE; sz = site.z+uz*VILLAGE_HUT_DISTANCE;
+      }
+      const sy = computeTerrainHeight(sx,sz);
+      const homePos = {x:site.x, y:computeTerrainHeight(site.x,site.z), z:site.z};
+      return spawnMob('villager', sx+0.5, sy, sz+0.5, homePos);
+    }
+  }
+  return null;
+}
 function updateMobs(dt, isNight){
   if(player.mode==='survival'){
     mobSpawnTimer -= dt;
     if(mobSpawnTimer<=0){ mobSpawnTimer=4+Math.random()*4; trySpawnMob(isNight); }
+  }
+  // Village/tower population isn't gated to survival mode (unlike wildlife
+  // spawning above) - it's world decoration/atmosphere, not a
+  // survival-challenge mechanic, so it repopulates in creative too. It IS
+  // gated to the Overworld: villages/towers are an Overworld-only concept
+  // for now (see ChunkManager.ensureLoaded's identical guard), and
+  // tryRepopulateNearbyStructure's site-finding hardcodes computeTerrainHeight
+  // rather than the current dimension's own heightFn, so running it outside
+  // the Overworld would place "villagers" at Overworld-shaped coordinates
+  // embedded in a completely different realm's real terrain.
+  if(currentDimension==='overworld'){
+    villagerRepopTimer -= dt;
+    if(villagerRepopTimer<=0){ villagerRepopTimer=5+Math.random()*5; tryRepopulateNearbyStructure(); }
   }
   for(let i=mobs.length-1;i>=0;i--){
     const m = mobs[i];
@@ -3686,8 +4448,17 @@ function damageMob(m, dmg){
     // Loot pops out onto the ground at the mob's position instead of
     // appearing directly in the hotbar - has to be walked over to collect.
     const stats = MOB_STATS[m.kind] || MOB_STATS.critter;
-    if(stats.passive) spawnItemEntity(m.pos.x, m.pos.y+0.3, m.pos.z, ITEMS_EXTRA.RAW_FOOD, 1+Math.floor(Math.random()*2));
-    else if(Math.random()<0.5) spawnItemEntity(m.pos.x, m.pos.y+0.3, m.pos.z, ITEMS_EXTRA.STICK, 1);
+    // noFoodDrop (see MOB_STATS.villager) opts all the way out of this
+    // generic drop, not just the raw-food half of it - it must come FIRST,
+    // or a noFoodDrop passive mob would fall through to the hostile-only
+    // "else" below and get a stick drop instead of nothing.
+    if(stats.noFoodDrop){
+      // no generic drop at all
+    } else if(stats.passive){
+      spawnItemEntity(m.pos.x, m.pos.y+0.3, m.pos.z, ITEMS_EXTRA.RAW_FOOD, 1+Math.floor(Math.random()*2));
+    } else if(Math.random()<0.5){
+      spawnItemEntity(m.pos.x, m.pos.y+0.3, m.pos.z, ITEMS_EXTRA.STICK, 1);
+    }
     if(stats.lootExtra){
       const n = stats.lootExtra.min + Math.floor(Math.random()*(stats.lootExtra.max-stats.lootExtra.min+1));
       spawnItemEntity(m.pos.x, m.pos.y+0.35, m.pos.z, stats.lootExtra.item, n);
@@ -3697,6 +4468,112 @@ function damageMob(m, dmg){
     playSound('hit');
   }
 }
+// A shearable mob (see MOB_STATS.sheep) can be right-clicked with Shears to
+// pop its shearDrop without killing it, on a per-mob cooldown so holding
+// right-click can't farm infinite wool from one sheep. Returns false (and
+// does nothing) for any mob/item combo that doesn't apply, so the caller can
+// fall through to normal block interaction.
+const SHEAR_COOLDOWN_SECONDS = 8;
+function tryShearMob(mob){
+  const stats = MOB_STATS[mob.kind] || MOB_STATS.critter;
+  if(!stats.shearable || !stats.shearDrop) return false;
+  const heldSlot = player.hotbar[player.selectedHotbar];
+  const heldDef = heldSlot ? ItemDef[heldSlot.id] : null;
+  if(!heldDef || !heldDef.tool || heldDef.tool.type!=='shears') return false;
+  if(mob.shearCooldown>0) return false;
+  const ex = stats.shearDrop;
+  const n = ex.min + Math.floor(Math.random()*(ex.max-ex.min+1));
+  if(n>0) spawnItemEntity(mob.pos.x, mob.pos.y+0.35, mob.pos.z, ex.item, n);
+  mob.shearCooldown = SHEAR_COOLDOWN_SECONDS;
+  if(heldSlot.durability!=null){
+    heldSlot.durability--;
+    if(heldSlot.durability<=0) player.hotbar[player.selectedHotbar]=null;
+    refreshHotbarUI();
+  }
+  playSound('pickup');
+  return true;
+}
+
+//////////////////////////////////////////////////////////////
+// DIMENSIONS — "other realms" beyond the Overworld. See the DIMENSIONS
+// registry (WORLD DATA section, near chunkDataKey/generateChunkData) for
+// what's registered and how the terrain/atmosphere side works. This
+// section is the actual travel mechanic: a craftable Rift Shard (see
+// RECIPES and its tryUseItem branch above) that steps currentDimension
+// through DIMENSION_CYCLE, one realm per use.
+//////////////////////////////////////////////////////////////
+// Remembers where the player was standing in each dimension when they LEFT
+// it, keyed by dimension name, so returning puts them back where they left
+// off instead of always re-landing at a fresh spot near (0,0).
+const dimensionReturnPos = {};
+// Generic version of computeSpawnPoint's "walk up from ground until 2 clear
+// air blocks" logic, parametrized by DIMENSIONS[currentDimension].heightFn
+// instead of hardcoded to the Overworld's computeTerrainHeight - used for a
+// dimension's first-ever landing spot. computeSpawnPoint itself stays
+// completely untouched/Overworld-only (it's already tested and only ever
+// runs once at startup, before currentDimension could be anything else
+// anyway) rather than trying to generalize it into this.
+function findSafeLandingSpot(x,z){
+  let y = DIMENSIONS[currentDimension].heightFn(x,z)+2;
+  const yMax = WORLD_HEIGHT-2;
+  while(y<yMax && (World.get(x,y,z)!==BLOCKS.AIR || World.get(x,y+1,z)!==BLOCKS.AIR)) y++;
+  return {x:x+0.5, y, z:z+0.5};
+}
+// Tears down every mesh/entity tied to whichever dimension is CURRENTLY
+// active, in preparation for currentDimension changing out from under them.
+// Shared by switchDimension (leaving one realm for another) and
+// respawnPlayer (dying somewhere other than the Overworld) - both need the
+// exact same teardown, for the exact same reason: every chunk mesh, mob,
+// dropped item, and in-flight arrow simulates/renders against World.get(),
+// which is about to resolve against a completely different chunk
+// namespace, so leaving any of them in place risks stale geometry rendered
+// at the new dimension's coordinates (worst case, an old chunk key that
+// happens to numerically coincide with a new-dimension chunk near the
+// player never gets rebuilt at all - see switchDimension's own comment) or
+// mobs/arrows corrupt-simulating against the wrong terrain.
+function unloadAllChunksAndEntities(){
+  // ChunkManager's own "cx,cz" key format (parsed with
+  // key.split(',').map(Number) in flushDirty/updateStreaming) is untouched
+  // by dimension-switching - only chunkDataKey (the underlying block DATA)
+  // is dimension-prefixed - so a full unload-everything pass here is both
+  // correct and the simplest way to guarantee nothing from the old
+  // dimension lingers in the scene.
+  for(const key of Array.from(ChunkManager.loaded)){
+    const p = key.split(',').map(Number);
+    ChunkManager.unload(p[0], p[1]);
+  }
+  ChunkManager.dirty.clear();
+  ChunkManager.pendingLoad.length = 0;
+  ChunkManager.pendingLoadSet.clear();
+  // Mobs/dropped items/in-flight arrows all repopulate naturally within
+  // moments via the existing spawn timers either way (see updateMobs), so
+  // losing them on a dimension change is a minor, acceptable simplification
+  // - not persisting them is what avoids the corrupt-simulation risk above.
+  mobs.slice().forEach(m=>removeMob(m));
+  for(let i=itemEntities.length-1;i>=0;i--) removeItemEntity(i);
+  for(let i=arrowEntities.length-1;i>=0;i--) removeArrow(i);
+}
+function switchDimension(toDim){
+  if(toDim===currentDimension || !DIMENSIONS[toDim]) return;
+  dimensionReturnPos[currentDimension] = {x:player.pos.x, y:player.pos.y, z:player.pos.z};
+  unloadAllChunksAndEntities();
+  currentDimension = toDim;
+
+  const remembered = dimensionReturnPos[toDim];
+  const landing = remembered || findSafeLandingSpot(0,0);
+  player.pos.set(landing.x, landing.y, landing.z);
+  player.vel.set(0,0,0);
+  camera.position.set(landing.x, landing.y+EYE_HEIGHT, landing.z);
+
+  const pcx=Math.floor(landing.x/CHUNK_SIZE), pcz=Math.floor(landing.z/CHUNK_SIZE);
+  // Smaller immediate radius than startup's 3 (see init()), for a snappier
+  // teleport - the rest streams in the same frame-budgeted way ordinary
+  // exploration already does, via the next few updateStreaming calls.
+  ChunkManager.loadAreaImmediate(pcx, pcz, 2);
+  updateDayNight(0); // refresh sky/fog/lighting immediately instead of waiting a frame
+  showToast('Entered '+DIMENSIONS[toDim].displayName);
+}
+
 //////////////////////////////////////////////////////////////
 // AUDIO - short sound effects and an ambient music pad, both synthesized
 // live with the Web Audio API (no external files can be fetched into a
@@ -3725,6 +4602,10 @@ const SOUND_DEFS = {
   jump:   { freq:300, to:380, type:'square',   dur:0.07, vol:0.08 },
   damage: { freq:100, to:50,  type:'sawtooth', dur:0.15, vol:0.15 },
   shoot:  { freq:400, to:700, type:'triangle', dur:0.10, vol:0.10 },
+  // A longer rising sweep for stepping through a Rift Shard (see
+  // tryUseItem) - distinct from every other (short, <=0.3s) cue, reading as
+  // a bigger "whoosh into another world" transition.
+  rift:   { freq:200, to:900, type:'sine', dur:0.35, vol:0.12 },
 };
 function playSound(name){
   const ctx = ensureAudio();
@@ -3897,7 +4778,25 @@ function spawnArrow(){
   const mesh = new THREE.Mesh(geo, mat);
   mesh.position.copy(origin);
   scene.add(mesh);
-  arrowEntities.push({ mesh, pos:origin.clone(), vel:dir.clone().multiplyScalar(ARROW_SPEED), age:0 });
+  arrowEntities.push({ mesh, pos:origin.clone(), vel:dir.clone().multiplyScalar(ARROW_SPEED), age:0, hostile:false });
+}
+// Mirrors spawnArrow() above but fired by a ranged mob (see MOB_STATS'
+// ranged/shootRange fields and updateMobAI's stats.ranged branch) aimed at
+// the player's rough eye level instead of the camera's look direction.
+// Marked hostile:true so updateArrows tests it against the player's hitbox
+// instead of mobs' - see the hostile branch there.
+function spawnHostileArrow(mob){
+  if(!scene) return;
+  const origin = new THREE.Vector3(mob.pos.x, mob.pos.y+0.4, mob.pos.z);
+  const target = new THREE.Vector3(player.pos.x, player.pos.y+EYE_HEIGHT*0.6, player.pos.z);
+  const dir = target.clone().sub(origin).normalize();
+  const geo = new THREE.BoxGeometry(0.08,0.08,0.5);
+  const mat = new THREE.MeshLambertMaterial({ color:0x8a6a3f });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.copy(origin);
+  scene.add(mesh);
+  arrowEntities.push({ mesh, pos:origin.clone(), vel:dir.multiplyScalar(ARROW_SPEED), age:0, hostile:true });
+  playSound('shoot');
 }
 function removeArrow(i){
   const a = arrowEntities[i];
@@ -3921,17 +4820,32 @@ function updateArrows(dt){
       if(raycastVoxel(a.pos, dirN, stepLen)){ removeArrow(i); continue; }
     }
     const newPos = a.pos.clone().add(step);
-    let hitMob=null;
-    for(const m of mobs){
-      if(m.dead) continue;
-      const distSq = pointSegmentDistSq(m.pos.x, m.pos.y+0.5, m.pos.z, a.pos.x,a.pos.y,a.pos.z, newPos.x,newPos.y,newPos.z);
-      if(distSq < ARROW_HIT_RADIUS*ARROW_HIT_RADIUS){ hitMob=m; break; }
+    let hitMob=null, hitPlayer=false;
+    if(a.hostile){
+      // Hostile (mob-fired) arrows test against the player's hitbox instead
+      // of mobs' - same swept-segment technique, just aimed at the other
+      // side of the fight. Skipped entirely in creative/dead same as any
+      // other damage source (damagePlayer already no-ops for those, but
+      // checking here too avoids doing the vector math for nothing).
+      if(!player.dead && player.mode!=='creative'){
+        const distSq = pointSegmentDistSq(player.pos.x, player.pos.y+EYE_HEIGHT*0.6, player.pos.z, a.pos.x,a.pos.y,a.pos.z, newPos.x,newPos.y,newPos.z);
+        if(distSq < ARROW_HIT_RADIUS*ARROW_HIT_RADIUS) hitPlayer=true;
+      }
+    } else {
+      for(const m of mobs){
+        if(m.dead) continue;
+        const distSq = pointSegmentDistSq(m.pos.x, m.pos.y+0.5, m.pos.z, a.pos.x,a.pos.y,a.pos.z, newPos.x,newPos.y,newPos.z);
+        if(distSq < ARROW_HIT_RADIUS*ARROW_HIT_RADIUS){ hitMob=m; break; }
+      }
     }
     a.pos.copy(newPos);
     a.mesh.position.copy(a.pos);
     if(a.vel.lengthSq()>0.0001) a.mesh.lookAt(a.pos.clone().add(a.vel));
     if(hitMob){
       damageMob(hitMob, ARROW_DAMAGE);
+      removeArrow(i);
+    } else if(hitPlayer){
+      damagePlayer(ARROW_DAMAGE, 'mob');
       removeArrow(i);
     }
   }
@@ -3944,7 +4858,28 @@ const DAY_LENGTH_SECONDS = 600;
 let dayTime = 0.4;
 function isNightTime(){ return -Math.cos(dayTime*Math.PI*2) < 0.03; }
 
+// Realms with hasDayNight:false (see the DIMENSIONS registry) have no
+// sun/moon/day-night simulation - just a fixed, moody atmosphere driven by
+// that dimension's own skyColor/ambientIntensity/hemiIntensity. Reuses the
+// same lighting objects updateDayNight's Overworld branch drives
+// (ambientLight/hemiLight/sunLight/scene.fog/scene.background) rather than
+// creating parallel ones, so nothing about their setup in initScene needs
+// to change for a second realm to exist.
+function updateNonOverworldAtmosphere(){
+  const dim = DIMENSIONS[currentDimension];
+  const sky = new THREE.Color(dim.skyColor);
+  scene.background = sky;
+  scene.fog.color.copy(sky);
+  ambientLight.intensity = dim.ambientIntensity;
+  hemiLight.intensity = dim.hemiIntensity;
+  sunLight.intensity = 0; // no directional "sun" here - purely ambient/hemi-lit
+  starField.material.opacity = 0;
+  sunMesh.material.opacity = 0;
+  moonMesh.material.opacity = 0;
+  document.getElementById('clock').textContent = '--:--'; // no meaningful clock without a day/night cycle
+}
 function updateDayNight(dt){
+  if(!DIMENSIONS[currentDimension].hasDayNight){ updateNonOverworldAtmosphere(); return; }
   dayTime += dt/DAY_LENGTH_SECONDS;
   if(dayTime>=1) dayTime-=1;
   // Shifted a quarter-turn so dayTime lines up with the HUD clock the way
